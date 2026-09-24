@@ -1,0 +1,28 @@
+.git
+.gitignore
+.github
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# 运行时数据（绝不进镜像）
+auths
+data
+config.json
+*.log
+
+# 前端依赖与旧产物（镜像内会重新构建）
+web/node_modules
+web/dist
+
+# 两个 Go 参考项目
+workbuddy2api
+workbuddy2api-gui
+
+# 测试临时目录
+tests/e2e_tmp

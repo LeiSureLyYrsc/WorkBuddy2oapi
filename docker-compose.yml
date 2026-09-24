@@ -1,0 +1,42 @@
+# WorkBuddy2API 统一服务 —— 单容器 / 单端口部署
+#
+# 网关 + Web 控制台合为一体：只需暴露一个端口（7863），即可同时使用
+# OpenAI 兼容 API 与浏览器控制台。账号与配置均热加载，新增账号无需重启。
+#
+# 启动：docker compose up -d --build
+# 访问：http://<服务器IP>:7863   （控制台默认口令 admin / workbuddy，请尽快修改）
+# API：  http://<服务器IP>:7863/v1/chat/completions
+
+services:
+  wb2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wb2api:latest
+    container_name: wb2api
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      WB2API_CONFIG: /app/config.json
+    ports:
+      # 唯一对外端口：API + 控制台 + SPA 全部走它
+      - "7863:7863"
+    volumes:
+      # 账号凭证（必须在宿主机持久化，否则容器重建需重新登录）
+      - ./auths:/app/auths
+      # 运行数据：池状态 state.json、请求统计、登录凭据、价格表
+      - ./data:/app/data
+      # 配置文件（可选）：不使用环境变量时，把 config.json 放这里
+      - ./config.json:/app/config.json
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:7863/healthz', timeout=4); sys.exit(0 if r.status in (200,503) else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    # 说明：容器内以 uid 10001（app）运行。挂载的 ./auths 与 ./data 需对该用户可写，
+    # 例如：mkdir -p auths data && sudo chown -R 10001:10001 auths data
