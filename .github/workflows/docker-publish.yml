@@ -1,0 +1,83 @@
+name: Build & Push Docker Image
+
+# ── 触发条件 ────────────────────────────────────────────────────────────
+# main 分支提交   → 构建并推送 latest + sha-xxxx
+# v* 标签         → 构建并推送语义化版本（1.2.3 / 1.2 / 1）+ latest
+# Pull Request    → 仅构建验证（不推送，不登录）
+# 手动触发        → 构建并推送
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 镜像名必须是全小写（OCI 规范）。GitHub 用户名含大写时 metadata-action
+# 会自动转小写，但这里显式写死，避免 cache-from 等手写引用踩坑。
+env:
+  IMAGE_NAME: ghcr.io/leisurelyyrsc/workbuddy2oapi
+
+# 同一分支的新提交会取消仍在进行的旧构建，节省 CI 额度。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Push to GHCR
+    runs-on: ubuntu-latest
+
+    # 推送 GHCR 需要 packages:write；读取代码需要 contents:read。
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # PR 来自 fork 时无法写入 GHCR，因此跳过登录与推送。
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # default 分支（main）→ latest
+            type=raw,value=latest,enable={{is_default_branch}}
+            # v1.2.3 → 1.2.3 / 1.2 / 1
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            # 每次提交 → sha-a1b2c3d
+            type=sha,format=short
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          # PR 只构建验证，不推送。
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          # GitHub Actions 原生缓存：加速前端 npm ci 与 uv sync 层。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image digest
+        run: echo "Pushed ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"

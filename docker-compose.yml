@@ -3,16 +3,30 @@
 # 网关 + Web 控制台合为一体：只需暴露一个端口（7863），即可同时使用
 # OpenAI 兼容 API 与浏览器控制台。账号与配置均热加载，新增账号无需重启。
 #
+# ── 默认：本地构建 ──────────────────────────────────────────────────────
 # 启动：docker compose up -d --build
 # 访问：http://<服务器IP>:7863   （控制台默认口令 admin / workbuddy，请尽快修改）
 # API：  http://<服务器IP>:7863/v1/chat/completions
+#
+# ── 可选：使用 GHCR 预构建镜像（免本地构建，更快）──────────────────────
+# 1) 注释掉下面的 build: 段
+# 2) 取消注释 image: ghcr.io/leisurelyyrsc/workbuddy2oapi:latest
+# 3) docker compose pull && docker compose up -d
+#    私有镜像需先登录：echo <PAT> | docker login ghcr.io -u <用户名> --password-stdin
 
 services:
   wb2api:
+    # ── 本地构建（默认启用）────────────────────────────────────────────
     build:
       context: .
       dockerfile: Dockerfile
+    # 本地构建产物固定打 wb2api:latest，避免与远程镜像 tag 混淆。
     image: wb2api:latest
+
+    # ── GHCR 预构建镜像（默认注释，按需启用）───────────────────────────
+    # 启用前请注释掉上面的 build: 段与 image: wb2api:latest
+    # image: ghcr.io/leisurelyyrsc/workbuddy2oapi:latest
+
     container_name: wb2api
     restart: unless-stopped
     environment:
