@@ -10,6 +10,8 @@ import logging
 import re
 from typing import Any
 
+from .models import split_region_prefix
+
 log = logging.getLogger("wb2api.payload")
 
 # ---------------------------------------------------------------------------
@@ -225,6 +227,8 @@ def prepare_body(
     obj["stream"] = True
     normalize_tool_choice(obj)
     normalize_roles(obj)
+    if isinstance(obj.get("model"), str):
+        obj["model"] = split_region_prefix(obj["model"])[1]
     normalize_reasoning_effort(obj, efforts)
     if sanitize and isinstance(obj.get("messages"), list):
         sanitize_messages(obj["messages"])

@@ -17,7 +17,7 @@ import httpx
 
 from .app_state import AppState
 from .metrics import Delta as MetricsDelta
-from .models import Account
+from .models import Account, split_region_prefix
 from .session import extract_key
 from .sse import aggregate, normalize_frame
 from .upstream import ErrKind, UpstreamError, classify
@@ -57,6 +57,7 @@ class ChatStat:
     toks: int = -1
     usage: dict[str, Any] | None = None
     logged: bool = False
+    echo_model: str = ""
 
     def done(self, state: AppState) -> None:
         if self.logged:
@@ -154,16 +155,27 @@ def parse_usage(u: dict[str, Any]) -> dict[str, Any]:
     return d
 
 
-def _peek(body: bytes) -> tuple[bool, str]:
+def peek_model(body: bytes) -> tuple[bool, str, str, str]:
+    """探测请求体中的流式标志与模型名称。
+
+    返回 (stream, region, bare, client_model)
+    """
     try:
         obj = json.loads(body)
     except (ValueError, TypeError):
-        return False, ""
+        return False, "", "", ""
     if not isinstance(obj, dict):
-        return False, ""
+        return False, "", "", ""
     stream = bool(obj.get("stream"))
-    model = obj.get("model") if isinstance(obj.get("model"), str) else ""
-    return stream, model or ""
+    raw_model = obj.get("model") if isinstance(obj.get("model"), str) else ""
+    client_model = raw_model or ""
+    region, bare = split_region_prefix(client_model)
+    return stream, region, bare, client_model
+
+
+def _peek(body: bytes) -> tuple[bool, str]:
+    stream, _region, bare, _client_model = peek_model(body)
+    return stream, bare
 
 
 # ---------------------------------------------------------------------------
@@ -251,20 +263,27 @@ async def _select_account(
     model: str,
     sticky_uid: str,
     sess_key: str,
+    region: str = "",
 ) -> Account | None:
     """选号 + 占用租约；粘性号不可用时解绑并回落普通轮换。"""
     pool = state.pool
     acct: Account | None = None
     if sticky_uid:
         acct = pool.pick_by_uid(sticky_uid)
-        if acct is None:
-            state.sticky.unbind(sess_key)
+        if acct is not None:
+            if region in ("cn", "global") and acct.is_global() != (region == "global"):
+                acct = None
+                if sess_key:
+                    state.sticky.unbind(sess_key)
+        else:
+            if sess_key:
+                state.sticky.unbind(sess_key)
     if acct is None:
-        acct = pool.pick_excluding_for_model(tried, model)
+        acct = pool.pick_excluding_for_model(tried, model, region=region)
     if acct is None:
         return None
     if not pool.acquire(acct.uid):
-        if sticky_uid and acct.uid == sticky_uid:
+        if sticky_uid and acct.uid == sticky_uid and sess_key:
             state.sticky.unbind(sess_key)
         return None
     return acct
@@ -282,7 +301,7 @@ async def open_stream(
     成功返回 _Prepared（调用方负责遍历 response.aiter_lines() 并在结束时 release）。
     失败抛 NoHealthyAccount。
     """
-    _stream, model = _peek(body)
+    _stream, region, bare, _client_model = peek_model(body)
     pool = state.pool
 
     sess_key = ""
@@ -297,7 +316,7 @@ async def open_stream(
     last_err: Exception | None = None
 
     for _ in range(max_rotate):
-        acct = await _select_account(state, tried, model, sticky_uid, sess_key)
+        acct = await _select_account(state, tried, bare, sticky_uid, sess_key, region=region)
         if acct is None:
             break
         tried.add(acct.uid)
@@ -306,7 +325,8 @@ async def open_stream(
             if not await _refresh_if_needed(state, acct):
                 lease.release()
                 if sticky_uid and acct.uid == sticky_uid:
-                    state.sticky.unbind(sess_key)
+                    if sess_key:
+                        state.sticky.unbind(sess_key)
                     sticky_uid = ""
                 continue
 
@@ -316,17 +336,19 @@ async def open_stream(
                 lease.release()
                 last_err = e
                 if sticky_uid and acct.uid == sticky_uid:
-                    state.sticky.unbind(sess_key)
+                    if sess_key:
+                        state.sticky.unbind(sess_key)
                     sticky_uid = ""
                 continue
 
             if status >= 400 or resp is None:
                 kind = classify(status, raw.decode("utf-8", errors="replace"))
                 last_err = UpstreamError(kind=kind, status=status, msg=raw.decode("utf-8", errors="replace"))
-                apply_error_policy(state, acct.uid, kind, raw.decode("utf-8", errors="replace"), model)
+                apply_error_policy(state, acct.uid, kind, raw.decode("utf-8", errors="replace"), bare)
                 lease.release()
                 if sticky_uid and acct.uid == sticky_uid:
-                    state.sticky.unbind(sess_key)
+                    if sess_key:
+                        state.sticky.unbind(sess_key)
                     sticky_uid = ""
                 continue
 
@@ -364,8 +386,8 @@ async def chat_non_stream(
     pinned_uid: str = "",
 ) -> tuple[int, dict[str, Any], ChatStat]:
     """非流式：轮转打开上游流并本地聚合为单个响应。"""
-    _stream, model = _peek(body)
-    st = ChatStat(start=time.time(), model=model or "-", mode="sync")
+    _stream, region, bare, client_model = peek_model(body)
+    st = ChatStat(start=time.time(), model=bare or "-", mode="sync", echo_model=client_model)
     prepared = await open_stream(state, body, max_rotate=max_rotate, pinned_uid=pinned_uid)
     st.uid = prepared.uid
     lease = _Lease(state, prepared.uid)
@@ -379,7 +401,7 @@ async def chat_non_stream(
             async for line in _iter_lines(state, stream):
                 yield line
 
-        resp = await aggregate(_lines())
+        resp = await aggregate(_lines(), echo_model=st.echo_model)
         usage = resp.get("usage")
         if isinstance(usage, dict):
             st.usage = usage
@@ -451,7 +473,10 @@ class StreamSession:
                         if isinstance(usage, dict):
                             self.stat.usage = usage
                             self.stat.toks = parse_usage(usage)["completion_tokens"]
-                        payload = json.dumps(normalize_frame(obj), ensure_ascii=False)
+                        payload = json.dumps(
+                            normalize_frame(obj, echo_model=self.stat.echo_model),
+                            ensure_ascii=False,
+                        )
                     valid += 1
                     yield payload
                 elif trimmed:
@@ -484,8 +509,8 @@ async def open_stream_session(
     pinned_uid: str = "",
 ) -> StreamSession:
     """打开流式会话（轮转在返回前完成，便于调用方先发 200 头）。"""
-    _stream, model = _peek(body)
-    st = ChatStat(start=time.time(), model=model or "-", mode="stream")
+    _stream, region, bare, client_model = peek_model(body)
+    st = ChatStat(start=time.time(), model=bare or "-", mode="stream", echo_model=client_model)
     prepared = await open_stream(state, body, max_rotate=max_rotate, pinned_uid=pinned_uid)
     st.uid = prepared.uid
     st.status = 200

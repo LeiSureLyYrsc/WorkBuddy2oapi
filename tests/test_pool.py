@@ -495,3 +495,46 @@ def test_counts_detailed_and_list() -> None:
     st_list = pool.list()
     assert [s.uid for s in st_list] == ["u1", "u2", "u3", "u4"]
     assert pool.available_uids() == ["u4"]
+
+
+def test_pick_region_filtering() -> None:
+    clock = FakeClock(1700000000.0)
+    pool = AccountPool(now_fn=clock)
+
+    acc_cn = Account(uid="u_cn", domain="workbuddy.cn")
+    acc_gl = Account(uid="u_gl", domain="workbuddy.ai")
+    assert not acc_cn.is_global()
+    assert acc_gl.is_global()
+
+    pool.add(acc_cn)
+    pool.add(acc_gl)
+
+    # 1. 区域严格筛选
+    picked_cn = pool.pick_excluding_for_model(region="cn")
+    assert picked_cn is not None
+    assert picked_cn.uid == "u_cn"
+
+    picked_gl = pool.pick_excluding_for_model(region="global")
+    assert picked_gl is not None
+    assert picked_gl.uid == "u_gl"
+
+    # 2. 裸模型/无前缀，二者皆可命中
+    picked_bare = pool.pick_excluding_for_model(region="")
+    assert picked_bare is not None
+    assert picked_bare.uid in ("u_cn", "u_gl")
+
+    # 3. pick_by_region 探测健康账号
+    assert pool.pick_by_region("cn") == acc_cn
+    assert pool.pick_by_region("global") == acc_gl
+
+    # 4. 全冷却兜底时也保持区域隔离
+    pool.cooldown("u_cn", "soft_rate", 300, "rate limit")
+    # u_cn 软冷却，但 fallback 仍应且仅应返回 u_cn，绝不跨越到 u_gl
+    fb_cn = pool.pick_excluding_for_model(region="cn")
+    assert fb_cn is not None
+    assert fb_cn.uid == "u_cn"
+    # 当 u_cn 处于硬禁用时，cn 无法再选到账号
+    pool.disable("u_cn", "banned")
+    assert pool.pick_excluding_for_model(region="cn") is None
+    assert pool.pick_by_region("cn") is None
+

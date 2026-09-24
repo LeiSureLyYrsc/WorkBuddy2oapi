@@ -295,14 +295,42 @@ class AccountPool:
         """跳过 tried 集合的选号。"""
         return self.pick_excluding_for_model(tried, "")
 
+    def pick_by_region(self, region: str) -> Account | None:
+        """返回指定 region（"cn" 或 "global"）的任意一个健康账号（忽略模型/权重，命中第一个健康账号即可）。"""
+        with self._lock:
+            now = self.now_fn()
+            target_global = (region == "global") if region in ("cn", "global") else None
+            for uid in sorted(self._by_uid.keys()):
+                e = self._by_uid[uid]
+                if target_global is not None and e.account.is_global() != target_global:
+                    continue
+                if self._healthy(e, now):
+                    return e.account
+            return None
+
+    def has_region_accounts(self, region: str) -> bool:
+        """检查池中是否存在指定 region 的账号（不论是否冷却/禁用）。"""
+        target_global = (region == "global") if region in ("cn", "global") else None
+        with self._lock:
+            if target_global is None:
+                return bool(self._by_uid)
+            return any(e.account.is_global() == target_global for e in self._by_uid.values())
+
+    def empty(self) -> bool:
+        """池中是否无任何账号。"""
+        with self._lock:
+            return len(self._by_uid) == 0
+
     def pick_excluding_for_model(
         self,
         tried: set[str] | None = None,
         req_model: str = "",
+        region: str = "",
     ) -> Account | None:
         """三因子加权随机选号（Top5 截断 + 防撞号 LRU 兜底 + 全冷却兜底）。"""
         with self._lock:
             now = self.now_fn()
+            target_global = (region == "global") if region in ("cn", "global") else None
 
             def healthy_of(e: _Entry) -> bool:
                 if req_model:
@@ -311,6 +339,8 @@ class AccountPool:
 
             cands: list[_Entry] = []
             for uid, e in self._by_uid.items():
+                if target_global is not None and e.account.is_global() != target_global:
+                    continue
                 if tried and uid in tried:
                     continue
                 if not healthy_of(e):
@@ -320,7 +350,7 @@ class AccountPool:
                 cands.append(e)
 
             if not cands:
-                return self._pick_earliest_expiry_locked(tried, now)
+                return self._pick_earliest_expiry_locked(tried, now, region=region)
 
             max_credits = max((e.credits for e in cands), default=0)
 
@@ -350,12 +380,16 @@ class AccountPool:
         self,
         tried: set[str] | None,
         now: float,
+        region: str = "",
     ) -> Account | None:
         """全冷却兜底：在非禁用的软冷却/熔断账号中选截止最早的一个。"""
+        target_global = (region == "global") if region in ("cn", "global") else None
         best: _Entry | None = None
         best_exp = 0.0
         for uid in sorted(self._by_uid.keys()):
             e = self._by_uid[uid]
+            if target_global is not None and e.account.is_global() != target_global:
+                continue
             if tried and uid in tried:
                 continue
             if e.disabled:

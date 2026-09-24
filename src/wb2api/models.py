@@ -234,3 +234,23 @@ def iso(ts: float | None) -> str:
 
 def now_iso() -> str:
     return iso(time.time())
+
+
+def split_region_prefix(model: str) -> tuple[str, str]:
+    """解析模型名称中的区域前缀。
+
+    返回 (region, bare)：
+    - 若以 "cn:" 开头，返回 ("cn", bare)
+    - 若以 "global:" 开头，返回 ("global", bare)
+    - 其余返回 ("", model)
+    即使 bare 内部包含冒号也完整保留。
+    """
+    if not model:
+        return "", ""
+    lower = model.lower()
+    if lower.startswith("cn:"):
+        return "cn", model[3:]
+    if lower.startswith("global:"):
+        return "global", model[7:]
+    return "", model
+

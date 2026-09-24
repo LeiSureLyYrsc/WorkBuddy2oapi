@@ -68,6 +68,32 @@ STATIC_MODELS: list[dict[str, Any]] = [
     {"id": "deepseek-v4-flash", "object": "model", "created": 1753600000, "owned_by": "workbuddy", "context_length": 131072},
 ]
 
+DOMESTIC_MODEL_IDS = {
+    "hy4-preview",
+    "hy3",
+    "hy3-preview",
+    "hy3-preview-agent",
+    "glm-5.3",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5v-turbo",
+    "kimi-k3",
+    "kimi-k2.7",
+    "minimax-m3",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+}
+
+
+def _prefix_models(models: list[dict[str, Any]], prefix: str) -> list[dict[str, Any]]:
+    return [{**m, "id": f"{prefix}:{m['id']}"} for m in models]
+
+
+CN_STATIC: list[dict[str, Any]] = _prefix_models(
+    [m for m in STATIC_MODELS if m["id"] in DOMESTIC_MODEL_IDS], "cn"
+)
+GLOBAL_STATIC: list[dict[str, Any]] = _prefix_models(STATIC_MODELS, "global")
+
 
 def _openai_error(code: str, message: str) -> dict[str, Any]:
     """生成 OpenAI 规范的错误响应体。"""
@@ -268,25 +294,29 @@ async def healthz(state: StateDep) -> Response:
 # ---------------------------------------------------------------------------
 
 _models_lock = asyncio.Lock()
-_cached_models: list[ModelInfo] = []
-_models_fetched_at: float = 0.0
-_models_last_fail: float = 0.0
+_cached_models: dict[str, list[ModelInfo]] = {"cn": [], "global": []}
+_models_fetched_at: dict[str, float] = {"cn": 0.0, "global": 0.0}
+_models_last_fail: dict[str, float] = {"cn": 0.0, "global": 0.0}
 
 DYNAMIC_MODELS_TTL = 3600.0  # 1 小时
 MODELS_FAIL_COOLDOWN = 300.0  # 5 分钟
 
 
-async def _fetch_dynamic_models(state: AppState) -> list[ModelInfo]:
-    """从池中任一健康账号拉取模型列表，拉取失败进入负缓存。"""
+async def _fetch_dynamic_models_for_region(state: AppState, region: str) -> list[ModelInfo]:
+    """从指定区域 (cn / global) 的健康账号拉取模型列表，拉取失败进入负缓存。"""
     global _cached_models, _models_fetched_at, _models_last_fail
     async with _models_lock:
         now = time.time()
-        if _cached_models and (now - _models_fetched_at) < DYNAMIC_MODELS_TTL:
-            return _cached_models
-        if _models_last_fail > 0 and (now - _models_last_fail) < MODELS_FAIL_COOLDOWN:
+        cached = _cached_models.get(region, [])
+        fetched_at = _models_fetched_at.get(region, 0.0)
+        last_fail = _models_last_fail.get(region, 0.0)
+
+        if cached and (now - fetched_at) < DYNAMIC_MODELS_TTL:
+            return cached
+        if last_fail > 0 and (now - last_fail) < MODELS_FAIL_COOLDOWN:
             return []
 
-        acct = state.pool.pick()
+        acct = state.pool.pick_by_region(region)
         if acct is None:
             return []
 
@@ -294,36 +324,85 @@ async def _fetch_dynamic_models(state: AppState) -> list[ModelInfo]:
             infos = await state.upstream.fetch_models(acct)
             if not infos:
                 state.pool.note_error(acct.uid)
-                _models_last_fail = time.time()
+                _models_last_fail[region] = time.time()
                 return []
-            _cached_models = infos
-            _models_fetched_at = time.time()
-            _models_last_fail = 0.0
-            return _cached_models
+            prefixed = [
+                ModelInfo(
+                    id=f"{region}:{mi.id}" if not mi.id.startswith(f"{region}:") else mi.id,
+                    name=mi.name,
+                    context_window=mi.context_window,
+                    max_tokens=mi.max_tokens,
+                    efforts=mi.efforts,
+                )
+                for mi in infos
+            ]
+            _cached_models[region] = prefixed
+            _models_fetched_at[region] = time.time()
+            _models_last_fail[region] = 0.0
+            return prefixed
         except Exception:
             state.pool.note_error(acct.uid)
-            _models_last_fail = time.time()
+            _models_last_fail[region] = time.time()
             return []
+
+
+async def _fetch_dynamic_models(state: AppState) -> list[ModelInfo]:
+    """按区域分别拉取动态模型并合并结果。"""
+    out: list[ModelInfo] = []
+    for region in ("cn", "global"):
+        if state.pool.has_region_accounts(region):
+            out.extend(await _fetch_dynamic_models_for_region(state, region))
+    return out
+
+
+def _model_info_to_dict(mi: ModelInfo) -> dict[str, Any]:
+    return {
+        "id": mi.id,
+        "object": "model",
+        "created": 1753600000,
+        "owned_by": "workbuddy",
+        "context_length": mi.context_window if mi.context_window > 0 else 131072,
+        "max_output_tokens": mi.max_tokens,
+    }
+
+
+def _dedup_models_by_id(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for m in models:
+        mid = m.get("id", "")
+        if mid not in seen:
+            seen.add(mid)
+            out.append(m)
+    return out
 
 
 @router.get("/v1/models", dependencies=[Depends(require_api_key)])
 async def models(state: StateDep) -> dict[str, Any]:
     """获取可用模型列表。优先从上游动态拉取，失败或无可用账号时回退到静态模型表。"""
-    infos = await _fetch_dynamic_models(state)
-    if infos:
-        data: list[dict[str, Any]] = [
-            {
-                "id": mi.id,
-                "object": "model",
-                "created": 1753600000,
-                "owned_by": "workbuddy",
-                "context_length": mi.context_window if mi.context_window > 0 else 131072,
-                "max_output_tokens": mi.max_tokens,
-            }
-            for mi in infos
-        ]
-        return {"object": "list", "data": data}
-    return {"object": "list", "data": STATIC_MODELS}
+    has_cn = state.pool.has_region_accounts("cn")
+    has_global = state.pool.has_region_accounts("global")
+
+    # 池完全为空时：回退到带前缀的静态模型表 (CN_STATIC + GLOBAL_STATIC)
+    if not has_cn and not has_global:
+        return {"object": "list", "data": _dedup_models_by_id(CN_STATIC + GLOBAL_STATIC)}
+
+    data: list[dict[str, Any]] = []
+    for region, has_acct, static_slice in [
+        ("cn", has_cn, CN_STATIC),
+        ("global", has_global, GLOBAL_STATIC),
+    ]:
+        if not has_acct:
+            # 该区域 0 账号：省略该区域，不编造模型
+            continue
+        infos = await _fetch_dynamic_models_for_region(state, region)
+        if infos:
+            data.extend([_model_info_to_dict(mi) for mi in infos])
+        else:
+            # 动态拉取失败但存在账号：回退到该区域的静态切片
+            data.extend(static_slice)
+
+    return {"object": "list", "data": _dedup_models_by_id(data)}
 
 
 # ---------------------------------------------------------------------------

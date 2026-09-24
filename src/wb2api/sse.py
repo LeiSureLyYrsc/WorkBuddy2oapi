@@ -41,7 +41,7 @@ def _merge_tool_call_delta(merged: dict[str, Any], delta: dict[str, Any]) -> Non
         mf["arguments"] = (prev + args) if isinstance(prev, str) and prev else args
 
 
-async def aggregate(lines: AsyncIterator[str]) -> dict[str, Any]:
+async def aggregate(lines: AsyncIterator[str], echo_model: str = "") -> dict[str, Any]:
     """读取完整 SSE 行流，聚合 delta.content 为单个 OpenAI chat.completion 响应。
 
     空流（无有效数据事件）抛 ValueError，由上层映射为 502 upstream_parse。
@@ -150,22 +150,26 @@ async def aggregate(lines: AsyncIterator[str]) -> dict[str, Any]:
         "id": id_,
         "object": "chat.completion",
         "created": int(created),
-        "model": model,
+        "model": echo_model if echo_model else model,
         "choices": [
             {"index": 0, "message": message, "finish_reason": finish_reason}
         ],
     }
+    if echo_model:
+        resp["model"] = echo_model
     if usage is not None:
         resp["usage"] = usage
     return resp
 
 
-def normalize_frame(obj: dict[str, Any]) -> dict[str, Any]:
+def normalize_frame(obj: dict[str, Any], echo_model: str = "") -> dict[str, Any]:
     """按 OpenAI 流式规范白名单重建帧，剔除上游噪声。"""
     out: dict[str, Any] = {}
     for k in ("id", "object", "created", "model", "system_fingerprint", "service_tier"):
         if obj.get(k) is not None:
             out[k] = obj[k]
+    if echo_model:
+        out["model"] = echo_model
     out.setdefault("object", "chat.completion.chunk")
     out.setdefault("id", "chatcmpl-wb2api")
 
@@ -207,6 +211,7 @@ def normalize_frame(obj: dict[str, Any]) -> dict[str, Any]:
 
 async def stream_frames(
     lines: AsyncIterator[str],
+    echo_model: str = "",
 ) -> AsyncIterator[str]:
     """把上游 SSE 行流规范化后逐帧产出 payload 字符串（不含 "data: " 前缀）。
 
@@ -227,7 +232,7 @@ async def stream_frames(
                 yield payload
                 continue
             if isinstance(obj, dict):
-                payload = json.dumps(normalize_frame(obj), ensure_ascii=False)
+                payload = json.dumps(normalize_frame(obj, echo_model=echo_model), ensure_ascii=False)
             valid_frames += 1
             yield payload
         elif trimmed:
