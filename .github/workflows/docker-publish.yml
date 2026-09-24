@@ -26,7 +26,11 @@ concurrency:
 jobs:
   build:
     name: Build & Push to GHCR
-    runs-on: ubuntu-latest
+    # 钉死 runner 版本：ubuntu-latest 将于 2026-10-19 静默迁移到 Ubuntu 26。
+    # 注意：GitHub 托管 runner 仅提供 Ubuntu/Windows/macOS；Debian runner 需 self-hosted。
+    # 此处的 runner OS 不影响镜像产物——镜像 base 由 Dockerfile 的
+    # python:3.12-slim（Debian）与 node:22-alpine 决定。
+    runs-on: ubuntu-24.04
 
     # 推送 GHCR 需要 packages:write；读取代码需要 contents:read。
     permissions:
