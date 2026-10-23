@@ -567,10 +567,34 @@ class Service:
             "data": {"file": file_name},
         }
 
-    def delete_account(self, uid: str) -> None:
-        """删除凭证并从账号池中移出（高危操作）。"""
-        self.ensure_dangerous()
-        self.state.remove_account_live(uid)
+    def delete_account(self, uid: str) -> dict[str, Any]:
+        """删除凭证并从账号池中移出。
+
+        删除账号属于常规的账号维护动作，只需调用方完成**二次确认**
+        （HTTP 层用 ``?confirm=<uid>`` 强制校验），不再要求 ``dangerous_ops``；
+        该开关只保留给「恢复配置备份」这类会整体覆盖服务端状态的操作。
+        """
+        self.ensure_writable()
+        uid = (uid or "").strip()
+        if not uid:
+            raise ValueError("uid 不能为空")
+
+        accounts, _ = self.accounts()
+        target = next((a for a in accounts if a["uid"] == uid), None)
+        if target is None:
+            raise FileNotFoundError(f"账号不存在: {uid}")
+
+        deleted_path = self.state.remove_account_live(uid)
+        file_name = os.path.basename(deleted_path) if deleted_path else ""
+        if file_name:
+            message = f"账号 {short_uid(uid)} 已删除（凭证文件 {file_name} 已移除）"
+        else:
+            message = f"账号 {short_uid(uid)} 已从账号池移除（无本地凭证文件）"
+        return {
+            "ok": True,
+            "message": message,
+            "deleted": {"uid": uid, "file_name": file_name, "had_file": bool(file_name)},
+        }
 
     def sync_accounts(self) -> dict[str, Any]:
         """从磁盘重新扫描凭证并原地同步到账号池（新增/移除），不重启进程。

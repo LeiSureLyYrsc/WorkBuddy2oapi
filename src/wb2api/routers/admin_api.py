@@ -283,19 +283,19 @@ async def get_account(uid: str, state: StateDep, silent: bool = Query(False)) ->
 
 @router.delete("/accounts/{uid}", dependencies=[Depends(require_session)])
 async def delete_account(uid: str, state: StateDep, confirm: str = Query("")) -> Any:
-    """删除账号凭证并从池中移除（需二次确认）。"""
-    if confirm != uid:
+    """删除账号凭证并从池中移除（需二次确认：``?confirm=<uid>``）。"""
+    uid = (uid or "").strip()
+    if confirm != uid or not uid:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
-                "error": "删除账号需确认：请在请求中带上 ?confirm=<uid>",
+                "error": "删除账号需二次确认：请在请求中带上 ?confirm=<uid>",
                 "code": "confirm_required",
             },
         )
     svc = Service(state)
     try:
-        svc.delete_account(uid)
-        return {"ok": True, "message": "账号已删除并移出账号池"}
+        return svc.delete_account(uid)
     except Exception as e:
         return handle_error(e)
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .auth_store import AccountStore
+from .auth_store import AccountStore, NoCredentialFileError
 from .config import Config, ConfigManager
 from .metrics import Collector
 from .models import Account
@@ -72,10 +72,21 @@ class AppState:
         """把单个账号原地加入内存池（OAuth/导入后立即生效）。"""
         self.pool.add(account)
 
-    def remove_account_live(self, uid: str) -> None:
-        """删除单个账号的磁盘凭证并原地移出内存池。"""
-        self.store.delete(uid)
+    def remove_account_live(self, uid: str) -> str | None:
+        """删除单个账号的磁盘凭证并原地移出内存池。
+
+        返回被删除的凭证文件路径；账号只存在于内存池、没有对应文件时返回 None
+        （此时仍会把它从池中摘除，保证「删除」在控制台上永远有确定结果）。
+        """
+        deleted_path: str | None = None
+        try:
+            deleted_path = self.store.delete(uid)
+        except NoCredentialFileError:
+            # 池内有、磁盘无：允许清理，避免控制台里出现删不掉的幽灵账号。
+            logger.info("账号 %s 无本地凭证文件，直接从池中移除", uid)
         self.pool.sync_from_dir(self.store.list()[0])
+        self.sticky.drop_uid(uid)
+        return deleted_path
 
     # ------------------------------------------------------------------
     # 配置热加载

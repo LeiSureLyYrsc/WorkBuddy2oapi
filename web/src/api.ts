@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   ConfigResponse,
   Credits,
+  DeleteAccountResult,
   ModelsResponse,
   OpResult,
   Overview,
@@ -102,7 +103,7 @@ export const api = {
   account: (uid: string, silent = false) =>
     get<AccountProfile>(`/api/accounts/${encodeURIComponent(uid)}${silent ? '?silent=true' : ''}`),
   deleteAccount: (uid: string) =>
-    del<{ ok: boolean; message: string }>(`/api/accounts/${encodeURIComponent(uid)}?confirm=${encodeURIComponent(uid)}`),
+    del<DeleteAccountResult>(`/api/accounts/${encodeURIComponent(uid)}?confirm=${encodeURIComponent(uid)}`),
   importAccount: (payload: Record<string, unknown>) => post<OpResult>('/api/accounts/import', payload),
   syncAccounts: () => post<SyncResult>('/api/accounts/sync'),
 

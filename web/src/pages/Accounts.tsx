@@ -177,11 +177,20 @@ export default function Accounts({ session }: { session: SessionInfo }) {
 
   const doDelete = async () => {
     if (!deleteTarget) return
+    const target = deleteTarget
     setDeleting(true)
+    setNotice(null)
     try {
-      const res = await api.deleteAccount(deleteTarget.uid)
+      const res = await api.deleteAccount(target.uid)
       setNotice({ kind: 'ok', text: res.message })
       setDeleteTarget(null)
+      setSelected((prev) => {
+        if (!prev.has(target.uid)) return prev
+        const next = new Set(prev)
+        next.delete(target.uid)
+        return next
+      })
+      if (detailUid === target.uid) setDetailUid(null)
       await load(true)
     } catch (err) {
       setNotice({ kind: 'error', text: err instanceof ApiError ? err.message : '删除失败' })
@@ -431,16 +440,14 @@ export default function Accounts({ session }: { session: SessionInfo }) {
                           </button>
                           <button
                             className="btn btn-sm btn-danger"
-                            disabled={busy || session.read_only || !session.dangerous_ops || !a.has_file}
+                            disabled={busy || writeDisabled}
                             onClick={() => setDeleteTarget(a)}
                             title={
-                              !a.has_file
-                                ? '该账号在网关池中但没有本地凭证文件，无法删除'
-                                : !session.dangerous_ops
-                                  ? '需在服务端开启 dangerous_ops 才能删除账号'
-                                  : session.read_only
-                                    ? '只读模式'
-                                    : '删除该账号凭证文件'
+                              writeDisabled
+                                ? '只读模式，写操作已禁用'
+                                : a.has_file
+                                  ? '删除该账号凭证文件（需二次确认）'
+                                  : '该账号没有本地凭证文件，删除将仅把它移出账号池（需二次确认）'
                             }
                           >
                             删除
@@ -481,22 +488,31 @@ export default function Accounts({ session }: { session: SessionInfo }) {
 
       {deleteTarget && (
         <ConfirmDialog
-          title="删除账号凭证"
+          title="删除账号"
           danger
           confirmText="确认删除"
           busy={deleting}
-          onCancel={() => setDeleteTarget(null)}
+          onCancel={() => {
+            if (!deleting) setDeleteTarget(null)
+          }}
           onConfirm={() => void doDelete()}
           message={
             <>
               <p style={{ marginTop: 0 }}>
                 即将删除账号 <strong>{displayName(deleteTarget)}</strong>
-                <span className="mono text-faint"> ({deleteTarget.uid.slice(0, 8)})</span> 的凭证文件
-                <span className="mono"> {deleteTarget.file_name}</span>。
+                <span className="mono text-faint"> ({deleteTarget.uid.slice(0, 8)})</span>
+                {deleteTarget.has_file ? (
+                  <>
+                    ，并移除凭证文件
+                    <span className="mono"> {deleteTarget.file_name}</span>。
+                  </>
+                ) : (
+                  <>，该账号没有本地凭证文件，将从账号池中直接移除。</>
+                )}
               </p>
               <p>
-                该操作<strong className="text-danger">不可从上游恢复</strong>：删除后需要重新走 OAuth 登录才能找回该账号。
-                删除后该账号会<strong>立即</strong>从账号池移出，无需重启。
+                该操作<strong className="text-danger">不可从上游恢复</strong>：删除后需要重新走 OAuth
+                登录才能找回该账号。删除后该账号会<strong>立即</strong>从账号池移出，无需重启。
               </p>
             </>
           }

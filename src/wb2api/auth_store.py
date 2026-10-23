@@ -195,11 +195,45 @@ class AccountStore:
             except OSError:
                 pass
 
-    def delete(self, uid: str) -> None:
-        """删除账号凭证文件；不存在抛出 NoCredentialFileError。"""
-        path = self.path_for(uid)
+    def path_by_uid(self, uid: str) -> str | None:
+        """按内容扫描目录，返回该 uid 实际所在的凭证文件路径。
+
+        规范文件名是 ``workbuddy-<uid>.json``，但外部拷贝/手工重命名的文件
+        （如 ``workbuddy-custom-name.json``）同样会被 :meth:`list` 收录并展示在
+        控制台里。仅凭 uid 推导路径会漏删这些文件，因此这里以**文件内容**为准。
+        """
+        if not valid_uid(uid):
+            return None
+        try:
+            files = sorted(Path(self._dir).glob("workbuddy*.json"))
+        except OSError:
+            return None
+        for f in files:
+            try:
+                acct = parse(f.read_bytes())
+            except Exception:
+                continue
+            if acct.uid == uid:
+                return str(f.resolve())
+        return None
+
+    def delete(self, uid: str) -> str:
+        """删除账号凭证文件并返回被删除的文件路径；无文件时抛出 NoCredentialFileError。
+
+        先按规范文件名定位，未命中再按内容扫描匹配 uid，保证控制台里
+        「有凭证文件」的账号一定能被删掉。
+        """
+        if not valid_uid(uid):
+            raise ValueError(f"非法 uid: {uid!r}")
+
         with self._lock:
+            path = self.path_for(uid)
+            if not Path(path).exists():
+                scanned = self.path_by_uid(uid)
+                if scanned is not None:
+                    path = scanned
             try:
                 os.remove(path)
             except FileNotFoundError:
                 raise NoCredentialFileError(f"该账号没有本地凭证文件: {uid}")
+            return path

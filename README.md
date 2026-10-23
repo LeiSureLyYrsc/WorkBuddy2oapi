@@ -106,7 +106,7 @@ docker compose up -d --build
 | `console.session_ttl` | `12h` | 控制台会话有效期 |
 | `console.credentials_file` | `./data/credentials.json` | 网页改密码的持久化文件 |
 | `console.read_only` | `false` | 全局只读：关闭一切写操作 |
-| `console.dangerous_ops` | `false` | 解锁删除账号 / 恢复配置备份等 |
+| `console.dangerous_ops` | `false` | 解锁「恢复配置备份」等高危操作（删除账号只需网页二次确认，不受此开关限制） |
 | `cooldown.soft_rate` | `600s` | 软限流冷却基数（连续触发指数退避） |
 | `cooldown.soft_rate_max` | `2h` | 软冷却指数退避封顶 |
 | `schedule.checkin_hours` | `[9,21]` | 每日签到整点（收尾顺带跑猫猫旅行） |
@@ -245,7 +245,7 @@ curl -sN http://localhost:7863/v1/chat/completions \
 新版把网关与控制台合进**同一进程**，并由 `AppState` 统一持有账号池与配置：
 
 - 新增/导入账号 → 写盘后直接 `pool.add(...)`，立即参与调度；
-- 删除账号 → 删盘后 `pool.sync_from_dir(...)`，立即移出；
+- 删除账号 → 删盘后 `pool.sync_from_dir(...)`，立即移出（按文件内容定位 uid，非规范文件名同样可删）；
 - 改配置 → `ConfigManager.write()` 后 `AppState.apply_config(...)` 热应用到各子系统。
 
 ---

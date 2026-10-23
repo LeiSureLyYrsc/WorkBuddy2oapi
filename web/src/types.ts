@@ -123,6 +123,13 @@ export interface OpResult {
   data?: Record<string, unknown>
 }
 
+/** 删除账号的返回结构（含被删除的凭证文件信息）。 */
+export interface DeleteAccountResult {
+  ok: boolean
+  message: string
+  deleted?: { uid: string; file_name: string; had_file: boolean }
+}
+
 export interface TaskItem {
   uid: string
   nickname: string

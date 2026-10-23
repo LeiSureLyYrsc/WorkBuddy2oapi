@@ -97,9 +97,9 @@ export default function System({
         </dl>
         {!session.dangerous_ops && (
           <div className="desc" style={{ marginTop: 12 }}>
-            当前未开启高危操作（<span className="mono">dangerous_ops=false</span>），因此「删除账号」
-            「恢复配置备份」均被禁用。如需启用，在面板服务端配置中设置：
-            <div className="muted-box" style={{ marginTop: 7 }}>{`WBGUI_DANGEROUS_OPS=true  # 或配置文件里 "dangerous_ops": true`}</div>
+            当前未开启高危操作（<span className="mono">dangerous_ops=false</span>），因此「恢复配置备份」
+            被禁用。删除账号属于常规维护，只需在界面上二次确认即可执行。如需启用高危操作：
+            <div className="muted-box" style={{ marginTop: 7 }}>{`WB2API_DANGEROUS_OPS=true  # 或配置文件里 "dangerous_ops": true`}</div>
           </div>
         )}
       </div>

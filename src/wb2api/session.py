@@ -157,6 +157,20 @@ class StickyRouter:
         with self._lock:
             return self._entries.pop(key, None) is not None
 
+    def drop_uid(self, uid: str) -> int:
+        """删除指向 uid 的全部会话绑定，返回清理数量。
+
+        账号被删除后，其绑定已无意义；主动清理可避免 resolve() 期间的
+        瞬时回退到已摘除账号。
+        """
+        if not uid:
+            return 0
+        with self._lock:
+            keys = [k for k, e in self._entries.items() if e.uid == uid]
+            for k in keys:
+                self._entries.pop(k, None)
+            return len(keys)
+
     def count(self) -> int:
         """返回当前活跃绑定数。"""
         with self._lock:
