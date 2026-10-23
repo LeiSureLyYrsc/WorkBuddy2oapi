@@ -12,7 +12,6 @@ from __future__ import annotations
 import hmac
 import json
 import logging
-import os
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -26,6 +25,7 @@ from wb2api.chat_service import NoHealthyAccount, chat_non_stream, open_stream_s
 from wb2api.deps import SESSION_COOKIE, SessionStore, StateDep, require_session
 from wb2api.oauth import normalize_region
 from wb2api.ops import DangerousDisabledError, ReadOnlyError, Service
+from wb2api.fsutil import atomic_write_text
 from wb2api.routers.openai_api import models as get_openai_models
 
 logger = logging.getLogger("wb2api.admin_api")
@@ -192,19 +192,8 @@ async def change_password(
     )
 
     cred_path = Path(cred_file)
-    cred_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = cred_path.with_name(f"{cred_path.name}.tmp")
     data_payload = json.dumps({"username": target_username, "password": payload.new_password}, indent=2, ensure_ascii=False) + "\n"
-    tmp_path.write_text(data_payload, encoding="utf-8")
-    try:
-        os.chmod(tmp_path, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp_path, cred_path)
-    try:
-        os.chmod(cred_path, 0o600)
-    except OSError:
-        pass
+    atomic_write_text(cred_path, data_payload, mode=0o600)
 
     state.config_manager.current.console.username = target_username
     state.config_manager.current.console.password = payload.new_password

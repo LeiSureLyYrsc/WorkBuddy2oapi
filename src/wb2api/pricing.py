@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from wb2api.fsutil import atomic_write_text
 
 DEEPSEEK_SOURCE = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing"
 DEEPSEEK_UPDATED = "2026-09-14"
@@ -190,20 +191,9 @@ class PricingTable:
 
         raw = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
         target = Path(self._path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f"{target.name}.tmp")
 
         with self._lock:
-            tmp.write_text(raw, encoding="utf-8")
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
-            os.replace(tmp, target)
-            try:
-                os.chmod(target, 0o600)
-            except OSError:
-                pass
+            atomic_write_text(target, raw, mode=0o600)
 
     def resolve(self, model: str) -> tuple[ModelPrice, bool]:
         """查找模型单价。先精确匹配，再做别名归一化匹配。"""

@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 
 from wb2api.models import Account
+from wb2api.fsutil import atomic_write_text
 
 _UID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{6,128}$")
 
@@ -180,20 +181,8 @@ class AccountStore:
         raw = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
 
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f"{target.name}.tmp")
-
         with self._lock:
-            tmp.write_text(raw, encoding="utf-8")
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
-            os.replace(tmp, target)
-            try:
-                os.chmod(target, 0o600)
-            except OSError:
-                pass
+            atomic_write_text(target, raw, mode=0o600)
 
     def path_by_uid(self, uid: str) -> str | None:
         """按内容扫描目录，返回该 uid 实际所在的凭证文件路径。

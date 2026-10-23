@@ -40,7 +40,12 @@ services:
       - ./auths:/app/auths
       # 运行数据：池状态 state.json、请求统计、登录凭据、价格表
       - ./data:/app/data
-      # 配置文件（可选）：不使用环境变量时，把 config.json 放这里
+      # 配置文件：把 config.json 放宿主机当前目录。
+      # 注意：单文件挂载会把目标钉在固定 inode 上，无法用 rename 覆盖；
+      # 代码已对此降级为就地重写（保存配置可正常生效，仅失去原子性）。
+      # 若想保留真正的原子替换，可改为挂载目录，例如：
+      #   - ./config:/app/config
+      #   并把上面的 WB2API_CONFIG 改成 /app/config/config.json
       - ./config.json:/app/config.json
     healthcheck:
       test:

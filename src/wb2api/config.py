@@ -20,6 +20,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from .fsutil import atomic_write_text
+
 # ---------------------------------------------------------------------------
 # 时长解析
 # ---------------------------------------------------------------------------
@@ -387,10 +389,9 @@ class ConfigManager:
         payload = json.dumps(cfg.model_dump(exclude={"source_path"}), ensure_ascii=False, indent=2)
         payload += "\n"
         target = Path(self.path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, target)
+        # 兼容 Docker 单文件挂载：目标被钉在固定 inode 上时无法 rename 覆盖，
+        # 由 atomic_write_text 自动降级为就地重写。权限交给系统默认值。
+        atomic_write_text(target, payload, mode=None)
         with self._lock:
             cfg.source_path = str(target)
             self._current = cfg

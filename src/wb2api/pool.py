@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from wb2api.models import Account, AccountStatus, iso
+from wb2api.fsutil import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -848,17 +849,7 @@ class AccountPool:
         sf = self._state_overview_locked()
         try:
             raw = json.dumps(sf, ensure_ascii=False, indent=2) + "\n"
-            dir_name = os.path.dirname(self.state_file)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-            tmp = self.state_file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(raw)
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
-            os.replace(tmp, self.state_file)
+            atomic_write_text(self.state_file, raw, mode=0o600)
             if self._persist_fails > 0:
                 logger.info("pool: state.json 落盘恢复（此前连续失败 %d 次）", self._persist_fails)
                 self._persist_fails = 0

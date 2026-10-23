@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from wb2api.models import iso, now_iso
+from wb2api.fsutil import atomic_write_text
 
 DEFAULT_RETENTION_SECONDS = 30 * 86400.0  # 30 天
 
@@ -494,20 +494,9 @@ class Collector:
         }
         raw = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
         target = Path(self._state_file)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f"{target.name}.tmp")
 
         try:
-            tmp.write_text(raw, encoding="utf-8")
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
-            os.replace(tmp, target)
-            try:
-                os.chmod(target, 0o600)
-            except OSError:
-                pass
+            atomic_write_text(target, raw, mode=0o600)
         except Exception:
             pass
 

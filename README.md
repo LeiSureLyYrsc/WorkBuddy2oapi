@@ -274,6 +274,37 @@ cd web && npm run dev
 - `auths/` 内含明文 `accessToken` / `refreshToken`，切勿提交 git；`.gitignore` 已排除 `auths/`、`data/`、`config.json`。
 - 仅限本人授权账号、本机/私有环境测试。使用者需遵守 CodeBuddy 服务条款，自行承担使用风险。
 
+---
+
+## 🧯 常见问题
+
+### 控制台保存配置报 `[Errno 16] Device or resource busy`
+
+Docker Compose 默认把 `./config.json` **以单文件**挂载进容器。这类挂载会把目标路径
+钉在一个固定 inode 上，`rename` 无法覆盖它，因此「写临时文件 + `os.replace`」的原子
+替换会失败，表现为**保存配置永远报错**（本地直接跑却正常）。
+
+现已内置降级：无法原子替换时自动改为**就地重写**（截断 + 覆写原 inode），保存可以正常
+生效，只是失去"写入过程中崩溃也不会读到半个文件"的原子性保证。首次降级会在日志里打印
+一条 warning。
+
+如希望保留严格的原子替换，把挂载改为目录形式：
+
+```yaml
+    environment:
+      WB2API_CONFIG: /app/config/config.json
+    volumes:
+      - ./config:/app/config          # 目录挂载
+```
+
+```bash
+mkdir -p config && mv config.json config/config.json
+docker compose up -d
+```
+
+同样的处理也适用于 `state.json`、`pricing.json`、`credentials.json` 与 `auths/*.json`
+—— 它们统一走 `wb2api.fsutil.atomic_write_text()`。
+
 ## 📄 License
 
 MIT（与原项目一致）。
