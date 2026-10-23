@@ -72,6 +72,18 @@ docker compose up -d --build
 
 访问 `http://<服务器IP>:7863`。
 
+> **关于「每次都要构建」**
+>
+> - **首次/代码更新后**必须构建：`docker-compose.yml` 默认走 `build:`（`image: wb2api:latest` 只是给本地构建产物打标签），
+>   而 `.dockerignore` 排除了 `web/dist`，所以前端要在镜像内用 `npm run build` 现场生成。
+>   不想构建就改用 GHCR 预构建镜像（见 `docker-compose.yml` 顶部注释）：
+>   注释掉 `build:` 段 → 启用 `image: ghcr.io/leisurelyyrsc/workbuddy2oapi:latest` → `docker compose pull && docker compose up -d`。
+> - **只是重启容器**不该构建。若 `docker compose logs` 里出现
+>   `Building wb2api @ file:///app` / `Installed 7 packages`，那是旧镜像里
+>   `CMD ["uv", "run", ...]` 在**容器启动时**又 sync 了一遍环境（`uv run` 默认带 `dev` 依赖组，
+>   而镜像构建时用的是 `--no-dev`）。现已在 Dockerfile 里改为直接执行 `/app/.venv/bin/python -m uvicorn`，
+>   启动不再有任何安装动作。**需要重建一次镜像**才能生效：`docker compose up -d --build`。
+
 ---
 
 ## ➕ 添加账号（重点：无需重启）
