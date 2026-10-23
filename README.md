@@ -117,6 +117,11 @@ docker compose up -d --build
 | `upstream.header_timeout_seconds` | `120` | 聊天 SSE 首字节前超时 |
 | `upstream.idle_timeout_seconds` | `300` | 聊天 SSE 流中空闲超时（活跃续命不掐） |
 | `features.sanitize_blacklist_fingerprints` | `true` | 出站请求体指纹脱敏 |
+| `prompt_guard.prepend_enabled` | `false` | 在会话最开头注入固定字符（打散上游开头前缀识别） |
+| `prompt_guard.prepend_text` | `你好!` | 注入的字符，字面拼接在 `messages[0]` 正文前 |
+| `prompt_guard.truncate_enabled` | `false` | 删除命中的固定句段（应对上游句首指纹） |
+| `prompt_guard.truncate_scope` | `all` | `all` = 删除全部命中；`first` = 只删第一处 |
+| `prompt_guard.truncate_patterns` | `[]` | 待删除的句段列表（字面量、大小写不敏感） |
 | `pool.max_in_flight` | `3` | 单账号最大在途请求数（`0` = 不限） |
 | `pool.breaker_threshold` | `3` | 连续失败触发熔断阈值 |
 | `pool.breaker_cooldown` / `_max` | `30m` / `6h` | 熔断基础时长 / 退避封顶 |
@@ -137,7 +142,22 @@ docker compose up -d --build
 `WB2API_HEADER_TIMEOUT_SECONDS` · `WB2API_IDLE_TIMEOUT_SECONDS` · `WB2API_MAX_BODY_MB` ·
 `WB2API_METRICS_FILE` · `WB2API_METRICS_RETENTION_DAYS` · `WB2API_SANITIZE_FINGERPRINTS`(bool) ·
 `WB2API_READ_ONLY`(bool) · `WB2API_DANGEROUS_OPS`(bool) · `WB2API_METRICS_ENABLED`(bool) ·
-`WB2API_CHECKIN_ENABLED`(bool) · `WB2API_KEEPALIVE_ENABLED`(bool) · `WB2API_SESSION_STICKY`(bool)
+`WB2API_CHECKIN_ENABLED`(bool) · `WB2API_KEEPALIVE_ENABLED`(bool) · `WB2API_SESSION_STICKY`(bool) ·
+`WB2API_PROMPT_PREPEND_ENABLED`(bool) · `WB2API_PROMPT_PREPEND_TEXT` · `WB2API_PROMPT_TRUNCATE_ENABLED`(bool) ·
+`WB2API_PROMPT_TRUNCATE_SCOPE` · `WB2API_PROMPT_TRUNCATE_PATTERNS`（`|` 或换行分隔多条）
+
+### 提示词防识别（Prompt Guard）
+
+上游可能对请求**开头**做指纹/前缀识别。`prompt_guard` 提供两种独立手段，默认全部关闭：
+
+- **前置字符**：把 `prepend_text`（默认 `你好!`）字面拼到 `messages[0]` 正文的最前面，打散开头前缀。
+  该消息 content 为字符串时直接前置；为多模态分片数组时前置进首个文本分片（无文本分片则在数组开头补一个）。
+  已以该文本开头则跳过（幂等），轮转重试不会叠加。
+- **截断句段**：把 `truncate_patterns` 中命中的固定句段从消息正文中**删除**，其余文字原样保留；
+  匹配为字面量、大小写不敏感。`truncate_scope=all` 删除全部命中，`first` 只删整段会话的第一处。
+  某条消息被删空时回填一个空格，避免上游对空 content 报错。
+
+两者同时开启时顺序固定为 **先截断、再前置**，保证注入的字符就是请求最开头的字节。改动配置即时热加载生效。
 
 ---
 

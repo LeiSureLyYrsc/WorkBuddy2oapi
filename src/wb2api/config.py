@@ -111,6 +111,51 @@ class FeaturesConfig(BaseModel):
     sanitize_blacklist_fingerprints: bool = True
 
 
+class PromptGuardConfig(BaseModel):
+    """提示词防识别：应对上游对请求**开头**做指纹/前缀识别。
+
+    两种手段互相独立，可同时开启，默认全关：
+
+    * ``prepend_*``：在会话最开头的消息（``messages[0]``，通常是 system）正文前
+      插入一段固定字符，打散上游对开头前缀的匹配。
+    * ``truncate_*``：把命中的固定句段（如 ``You are an AI agent powered by ...``）
+      从消息正文中删除，其余文字原样保留。
+
+    两者同时开启时顺序固定为 **先截断、再前置**，保证注入的字符是请求最开头的字节。
+    """
+
+    prepend_enabled: bool = False
+    prepend_text: str = "你好!"
+    truncate_enabled: bool = False
+    # all = 删除全部命中；first = 整段会话只删除第一处命中
+    truncate_scope: str = "all"
+    truncate_patterns: list[str] = Field(default_factory=list)
+
+    @field_validator("truncate_scope")
+    @classmethod
+    def _valid_scope(cls, v: str) -> str:
+        val = (v or "").strip().lower()
+        if val not in ("all", "first"):
+            raise ValueError(f"truncate_scope 必须是 all 或 first，收到 {v!r}")
+        return val
+
+    @field_validator("truncate_patterns")
+    @classmethod
+    def _clean_patterns(cls, v: list[str]) -> list[str]:
+        """去掉空串/纯空白项并去重，保持书写顺序。"""
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in v or []:
+            if not isinstance(raw, str):
+                continue
+            pat = raw.strip()
+            if not pat or pat in seen:
+                continue
+            seen.add(pat)
+            out.append(pat)
+        return out
+
+
 class PoolConfig(BaseModel):
     max_in_flight: int = 3
     breaker_threshold: int = 3
@@ -168,6 +213,7 @@ class Config(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
     features: FeaturesConfig = Field(default_factory=FeaturesConfig)
+    prompt_guard: PromptGuardConfig = Field(default_factory=PromptGuardConfig)
     pool: PoolConfig = Field(default_factory=PoolConfig)
     session_sticky: SessionStickyConfig = Field(default_factory=SessionStickyConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -229,6 +275,8 @@ _ENV_MAP: dict[str, tuple[str, str]] = {
     "WB2API_MAX_BODY_MB": ("server", "max_body_mb"),
     "WB2API_METRICS_FILE": ("server", "metrics_file"),
     "WB2API_METRICS_RETENTION_DAYS": ("server", "metrics_retention_days"),
+    "WB2API_PROMPT_PREPEND_TEXT": ("prompt_guard", "prepend_text"),
+    "WB2API_PROMPT_TRUNCATE_SCOPE": ("prompt_guard", "truncate_scope"),
 }
 
 _ENV_BOOL: dict[str, tuple[str, str]] = {
@@ -239,6 +287,8 @@ _ENV_BOOL: dict[str, tuple[str, str]] = {
     "WB2API_CHECKIN_ENABLED": ("schedule", "checkin_enabled"),
     "WB2API_KEEPALIVE_ENABLED": ("schedule", "keepalive_enabled"),
     "WB2API_SESSION_STICKY": ("session_sticky", "enabled"),
+    "WB2API_PROMPT_PREPEND_ENABLED": ("prompt_guard", "prepend_enabled"),
+    "WB2API_PROMPT_TRUNCATE_ENABLED": ("prompt_guard", "truncate_enabled"),
 }
 
 
@@ -265,6 +315,12 @@ def _apply_env(data: dict[str, Any]) -> None:
         if raw is None or raw == "":
             continue
         data.setdefault(top, {})[sub] = raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    # 列表型字段：用 "|" 或换行分隔多条（句段本身可能含空格/逗号，故不用逗号）。
+    raw_patterns = os.environ.get("WB2API_PROMPT_TRUNCATE_PATTERNS")
+    if raw_patterns:
+        items = [s.strip() for s in re.split(r"[|\r\n]+", raw_patterns)]
+        data.setdefault("prompt_guard", {})["truncate_patterns"] = [s for s in items if s]
 
 
 # ---------------------------------------------------------------------------

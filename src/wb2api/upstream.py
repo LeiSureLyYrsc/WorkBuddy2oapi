@@ -28,7 +28,7 @@ from .headers import (
     refresh_headers,
 )
 from .models import Account
-from .payload import prepare_body
+from .payload import PromptGuard, prepare_body
 
 logger = logging.getLogger("wb2api.upstream")
 
@@ -403,6 +403,7 @@ class UpstreamClient:
         idle_timeout_seconds: float = 0,
         sanitize: bool = True,
         *,
+        prompt_guard: Any = None,
         chat_base_cn: str = CHAT_BASE_CN,
         billing_base_cn: str = BILLING_BASE_CN,
         chat_base_global: str = CHAT_BASE_GLOBAL,
@@ -410,6 +411,7 @@ class UpstreamClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.sanitize = sanitize
+        self.prompt_guard = PromptGuard.from_config(prompt_guard)
         self.idle_timeout_seconds = idle_timeout_seconds
         self.efforts: dict[str, list[str]] = {}
 
@@ -662,7 +664,12 @@ class UpstreamClient:
         """发起聊天 SSE 请求。2xx 返回 (response, 200, b"")，非 2xx 返回 (None, status, raw_bytes)。"""
         url = f"{self._chat_base(account)}/v2/chat/completions"
         headers = chat_headers(account)
-        out_body = prepare_body(body, sanitize=self.sanitize, efforts=self.efforts)
+        out_body = prepare_body(
+            body,
+            sanitize=self.sanitize,
+            efforts=self.efforts,
+            guard=self.prompt_guard,
+        )
         req = self.chat_http.build_request("POST", url, headers=headers, content=out_body)
 
         try:

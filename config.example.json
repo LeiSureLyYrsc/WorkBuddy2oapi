@@ -36,6 +36,16 @@
     "sanitize_blacklist_fingerprints": true
   },
 
+  "prompt_guard": {
+    "prepend_enabled": false,
+    "prepend_text": "你好!",
+    "truncate_enabled": false,
+    "truncate_scope": "all",
+    "truncate_patterns": [
+      "You are an AI agent powered by DeepSeek Harness."
+    ]
+  },
+
   "pool": {
     "max_in_flight": 3,
     "breaker_threshold": 3,

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from .models import split_region_prefix
@@ -201,6 +202,196 @@ def sanitize_messages(messages: list[Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 提示词防识别（Prompt Guard）
+#
+# 上游可能对请求**开头**做指纹/前缀识别。这里提供两种独立手段，默认全关：
+#   1. prepend：在 messages[0] 正文前插入固定字符，打散开头前缀。
+#   2. truncate：删除命中的固定句段，其余文字原样保留。
+# 顺序固定为 truncate -> prepend，保证注入文本落在请求最开头的字节上。
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PromptGuard:
+    """提示词防识别配置的不可变快照（从 PromptGuardConfig 转换而来）。"""
+
+    prepend_enabled: bool = False
+    prepend_text: str = "你好!"
+    truncate_enabled: bool = False
+    truncate_scope: str = "all"
+    truncate_patterns: tuple[str, ...] = ()
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> PromptGuard | None:
+        """从 PromptGuardConfig（或其他具备同名属性的对象）构造；None 表示无配置。"""
+        if cfg is None:
+            return None
+        if isinstance(cfg, PromptGuard):
+            return cfg
+        patterns = getattr(cfg, "truncate_patterns", ()) or ()
+        scope = str(getattr(cfg, "truncate_scope", "all") or "all").strip().lower()
+        return cls(
+            prepend_enabled=bool(getattr(cfg, "prepend_enabled", False)),
+            prepend_text=str(getattr(cfg, "prepend_text", "") or ""),
+            truncate_enabled=bool(getattr(cfg, "truncate_enabled", False)),
+            truncate_scope="first" if scope == "first" else "all",
+            truncate_patterns=tuple(p for p in patterns if isinstance(p, str) and p),
+        )
+
+    @property
+    def active(self) -> bool:
+        """是否真的会改写请求体（开关打开但内容为空时视为不生效）。"""
+        prepend = self.prepend_enabled and bool(self.prepend_text)
+        truncate = self.truncate_enabled and bool(self.truncate_patterns)
+        return prepend or truncate
+
+
+def _truncate_text(text: str, patterns: tuple[str, ...], only_first: bool) -> tuple[str, int]:
+    """按字面量（大小写不敏感）删除命中的句段，返回 (新文本, 删除处数)。
+
+    ``only_first=True`` 时最多删除一处后立即返回，用于跨消息共享"只删第一个"语义。
+
+    用 ``re`` 做匹配而不是自己 lower() 后 find()：正则的匹配区间始终是**原串**下标，
+    不会因为个别 Unicode（如 ``İ``）小写化后码位数量变化而切错位置。
+    """
+    if not text or not patterns:
+        return text, 0
+    hits = 0
+    for pat in patterns:
+        if not pat:
+            continue
+        spans = [m.span() for m in re.finditer(re.escape(pat), text, re.IGNORECASE)]
+        if not spans:
+            continue
+        if only_first:
+            start, end = spans[0]
+            return text[:start] + text[end:], hits + 1
+        # 倒序删除：从后往前切，前面区间的下标始终有效。
+        for start, end in reversed(spans):
+            text = text[:start] + text[end:]
+            hits += 1
+    return text, hits
+
+
+def _truncate_part(part: Any, patterns: tuple[str, ...], only_first: bool) -> tuple[Any, int]:
+    """处理多模态分片：只改 text 分片的 text 字段，图片等其他分片原样返回。"""
+    if not isinstance(part, dict):
+        return part, 0
+    if part.get("type") not in (None, "text"):
+        return part, 0
+    body = part.get("text")
+    if not isinstance(body, str):
+        return part, 0
+    new_body, hits = _truncate_text(body, patterns, only_first)
+    if hits:
+        part["text"] = new_body
+    return part, hits
+
+
+def _truncate_content(content: Any, patterns: tuple[str, ...], only_first: bool) -> tuple[Any, int]:
+    """对单条消息的 content 做删除，返回 (content, 删除处数)。"""
+    if isinstance(content, str):
+        return _truncate_text(content, patterns, only_first)
+    if isinstance(content, list):
+        hits = 0
+        for part in content:
+            if only_first and hits:
+                break
+            _, n = _truncate_part(part, patterns, only_first)
+            hits += n
+        return content, hits
+    return content, 0
+
+
+def _blank_to_space(content: Any) -> Any:
+    """整段被删空时回填一个空格，避免上游对空 content 报错（保留消息本身，不破坏 role 交替）。"""
+    if isinstance(content, str) and not content.strip():
+        return " "
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in (None, "text"):
+                body = part.get("text")
+                if isinstance(body, str) and not body.strip():
+                    part["text"] = " "
+    return content
+
+
+def apply_truncate(obj: dict[str, Any], guard: PromptGuard) -> int:
+    """删除 messages[].content 中命中的句段，返回删除处数。"""
+    messages = obj.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    only_first = guard.truncate_scope == "first"
+    total = 0
+    for m in messages:
+        if not isinstance(m, dict) or "content" not in m:
+            continue
+        if only_first and total:
+            break
+        new_content, hits = _truncate_content(m["content"], guard.truncate_patterns, only_first)
+        if hits:
+            m["content"] = _blank_to_space(new_content)
+            total += hits
+    return total
+
+
+def apply_prepend(obj: dict[str, Any], guard: PromptGuard) -> bool:
+    """在会话最开头的消息正文前插入 guard.prepend_text。
+
+    已经以该文本开头时跳过（幂等），避免轮转重试出现 "你好!你好!"。
+    """
+    messages = obj.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    text = guard.prepend_text
+    if not text:
+        return False
+
+    first = messages[0]
+    if not isinstance(first, dict):
+        return False
+    content = first.get("content")
+
+    if isinstance(content, str):
+        if content.startswith(text):
+            return False
+        first["content"] = text + content
+        return True
+
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in (None, "text"):
+                body = part.get("text")
+                if isinstance(body, str):
+                    if body.startswith(text):
+                        return False
+                    part["text"] = text + body
+                    return True
+        # 首个文本分片缺失（例如首分片是图片）：在数组开头补一个文本分片。
+        content.insert(0, {"type": "text", "text": text})
+        return True
+
+    if content is None:
+        first["content"] = text
+        return True
+    return False
+
+
+def apply_prompt_guard(obj: dict[str, Any], guard: PromptGuard | None) -> None:
+    """先截断、再前置（顺序不可调换：前置必须落在请求最开头）。"""
+    if guard is None or not guard.active:
+        return
+    truncated = 0
+    if guard.truncate_enabled and guard.truncate_patterns:
+        truncated = apply_truncate(obj, guard)
+    prepended = False
+    if guard.prepend_enabled and guard.prepend_text:
+        prepended = apply_prepend(obj, guard)
+    if truncated or prepended:
+        log.info("prompt_guard applied truncated=%d prepended=%s", truncated, prepended)
+
+
+# ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
 
@@ -209,10 +400,12 @@ def prepare_body(
     src: bytes | str,
     sanitize: bool = True,
     efforts: dict[str, list[str]] | None = None,
+    guard: PromptGuard | None = None,
 ) -> bytes:
     """单 pass 改写出站 chat 请求体。
 
     sanitize=False 时仍强制 stream 并归一 tool_choice/role（协议兼容，非内容脱敏）。
+    guard 为 None 或未启用时不做任何提示词改写（默认行为不变）。
     """
     if not src:
         return src if isinstance(src, bytes) else src.encode()
@@ -232,5 +425,6 @@ def prepare_body(
     normalize_reasoning_effort(obj, efforts)
     if sanitize and isinstance(obj.get("messages"), list):
         sanitize_messages(obj["messages"])
+    apply_prompt_guard(obj, guard)
 
     return json.dumps(obj, ensure_ascii=False).encode()

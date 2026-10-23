@@ -121,7 +121,7 @@ class AppState:
             self.sticky.ttl_seconds = new.session_sticky.ttl_seconds
             self.sticky.gc_interval_seconds = new.session_sticky.gc_interval_seconds
 
-            # 3. 上游超时 / 脱敏：仅在相关字段变化时重建（避免打断在途流）
+            # 3. 上游超时 / 脱敏 / 提示词防识别：仅在相关字段变化时重建（避免打断在途流）
             if old is not None:
                 changed = (
                     new.upstream.timeout_seconds != old.upstream.timeout_seconds
@@ -129,6 +129,7 @@ class AppState:
                     or new.upstream.idle_timeout_seconds != old.upstream.idle_timeout_seconds
                     or new.features.sanitize_blacklist_fingerprints
                     != old.features.sanitize_blacklist_fingerprints
+                    or new.prompt_guard != old.prompt_guard
                 )
                 if changed:
                     self.rebuild_upstream(new)
@@ -145,6 +146,7 @@ class AppState:
             header_timeout_seconds=cfg.upstream.header_timeout_seconds,
             idle_timeout_seconds=cfg.upstream.idle_timeout_seconds,
             sanitize=cfg.features.sanitize_blacklist_fingerprints,
+            prompt_guard=cfg.prompt_guard,
         )
         # 让依赖旧引用的子系统改用新客户端
         self.logins.upstream = self.upstream
@@ -182,6 +184,7 @@ def build_upstream(cfg: Config) -> UpstreamClient:
         header_timeout_seconds=cfg.upstream.header_timeout_seconds,
         idle_timeout_seconds=cfg.upstream.idle_timeout_seconds,
         sanitize=cfg.features.sanitize_blacklist_fingerprints,
+        prompt_guard=cfg.prompt_guard,
     )
 
 

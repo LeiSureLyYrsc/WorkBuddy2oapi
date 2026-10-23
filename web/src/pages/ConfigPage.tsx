@@ -9,6 +9,26 @@ import { Alert, ConfirmDialog, fmtISO, Spinner } from '../ui'
 
 type Doc = Record<string, unknown>
 
+/** 读取 prompt_guard.truncate_patterns；无内容时给一个空行占位，保证始终有输入框。 */
+function readPatterns(doc: Doc): string[] {
+  const raw = getPath(doc, 'prompt_guard.truncate_patterns')
+  const list = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []
+  return list.length > 0 ? list : ['']
+}
+
+/** 写盘用的句段列表：剪掉空串/纯空白行，去重并保持顺序。 */
+function prunePatterns(rows: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of rows) {
+    const pat = raw.trim()
+    if (!pat || seen.has(pat)) continue
+    seen.add(pat)
+    out.push(pat)
+  }
+  return out
+}
+
 /** 按路径读写嵌套字段。 */
 function getPath(doc: Doc, path: string): unknown {
   return path.split('.').reduce<unknown>((acc, key) => {
@@ -69,6 +89,9 @@ export default function ConfigPage({ session }: { session: SessionInfo }) {
   const [showApiKey, setShowApiKey] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
   const [resetting, setResetting] = useState(false)
+  // 待截断句段的编辑行视图：允许暂时存在空行（方便继续输入），
+  // 写进 doc 时统一剪掉空串，避免保存后空行被后端校验器吞掉导致行跳变。
+  const [patternRows, setPatternRows] = useState<string[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -77,6 +100,7 @@ export default function ConfigPage({ session }: { session: SessionInfo }) {
       setDoc(res.config)
       setMeta(res.meta)
       setJsonText(JSON.stringify(res.config, null, 2))
+      setPatternRows(readPatterns(res.config))
       setError(null)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '加载配置失败')
@@ -125,6 +149,7 @@ export default function ConfigPage({ session }: { session: SessionInfo }) {
       // 用服务端返回的规范化内容覆盖本地（例如 JSON 缩进、字段顺序）。
       setDoc(res.config)
       setJsonText(JSON.stringify(res.config, null, 2))
+      setPatternRows(readPatterns(res.config))
     } catch {
       // 刷新失败不影响"已保存"这一事实，保留当前视图。
     }
@@ -182,6 +207,25 @@ export default function ConfigPage({ session }: { session: SessionInfo }) {
   const numStr = (path: string) => {
     const v = getPath(doc ?? {}, path)
     return v === undefined || v === null ? '' : String(v)
+  }
+
+  // 句段列表：patternRows 是编辑视图，doc 里存的是剪枝后的结果。
+  const updatePattern = (idx: number, value: string) => {
+    const next = [...patternRows]
+    next[idx] = value
+    setPatternRows(next)
+    update('prompt_guard.truncate_patterns', prunePatterns(next))
+  }
+
+  const addPattern = () => {
+    setPatternRows([...patternRows, ''])
+  }
+
+  const removePattern = (idx: number) => {
+    const next = patternRows.filter((_, i) => i !== idx)
+    const rows = next.length > 0 ? next : ['']
+    setPatternRows(rows)
+    update('prompt_guard.truncate_patterns', prunePatterns(rows))
   }
 
   return (
@@ -494,6 +538,91 @@ export default function ConfigPage({ session }: { session: SessionInfo }) {
                 出站请求体指纹脱敏
               </label>
               <div className="desc">清洗请求体中的黑名单指纹字段，降低被上游识别为自动化工具的风险。</div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <h2>提示词防识别（Prompt Guard）</h2>
+              <span className="hint">默认关闭 · 仅在上游识别提示词前缀时开启</span>
+            </div>
+            <div className="row">
+              <div className="field" style={{ flex: 1 }}>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={bool('prompt_guard.prepend_enabled')}
+                    onChange={(e) => update('prompt_guard.prepend_enabled', e.target.checked)}
+                  />
+                  在提示词开头注入字符
+                </label>
+                <div className="desc">
+                  字面拼接到会话最开头那条消息（通常是 system）的正文前，打散上游对开头前缀的识别。
+                </div>
+              </div>
+              <div className="field" style={{ flex: 1 }}>
+                <label>注入内容 prepend_text</label>
+                <input
+                  type="text"
+                  value={str('prompt_guard.prepend_text')}
+                  onChange={(e) => update('prompt_guard.prepend_text', e.target.value)}
+                  placeholder="你好!"
+                  disabled={!bool('prompt_guard.prepend_enabled')}
+                />
+                <div className="desc">字面拼接，不加空格/换行；需要分隔请自己写进内容里。</div>
+              </div>
+            </div>
+
+            <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '14px 0' }} />
+
+            <div className="row">
+              <div className="field" style={{ flex: 1 }}>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={bool('prompt_guard.truncate_enabled')}
+                    onChange={(e) => update('prompt_guard.truncate_enabled', e.target.checked)}
+                  />
+                  截断命中的句段
+                </label>
+                <div className="desc">把下方列出的句段从消息正文中删除，其余文字原样保留（字面量、大小写不敏感）。</div>
+              </div>
+              <div className="field" style={{ flex: 1 }}>
+                <label>截断范围 truncate_scope</label>
+                <select
+                  value={str('prompt_guard.truncate_scope') || 'all'}
+                  onChange={(e) => update('prompt_guard.truncate_scope', e.target.value)}
+                  disabled={!bool('prompt_guard.truncate_enabled')}
+                >
+                  <option value="all">全部命中都删除</option>
+                  <option value="first">只删除第一处命中</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>待截断句段 truncate_patterns</label>
+              <div className="desc" style={{ marginTop: 0, marginBottom: 8 }}>
+                一行一条；空行会被自动忽略。例如 <span className="mono">You are an AI agent powered by DeepSeek Harness.</span>
+              </div>
+              {patternRows.map((pat, idx) => (
+                <div key={idx} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    style={{ flex: 1 }}
+                    value={pat}
+                    onChange={(e) => updatePattern(idx, e.target.value)}
+                    placeholder="You are an AI agent powered by …"
+                    disabled={!bool('prompt_guard.truncate_enabled')}
+                  />
+                  <button className="btn shrink" type="button" onClick={() => removePattern(idx)} disabled={!bool('prompt_guard.truncate_enabled')}>
+                    删除
+                  </button>
+                </div>
+              ))}
+              <button className="btn shrink" type="button" onClick={addPattern} disabled={!bool('prompt_guard.truncate_enabled')}>
+                ➕ 添加一条
+              </button>
             </div>
           </div>
 
