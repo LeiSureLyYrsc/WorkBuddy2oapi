@@ -66,10 +66,13 @@ def test_billing_headers_origin_follows_region() -> None:
 
 
 def test_chat_headers_keep_cli_fingerprint() -> None:
-    # 聊天接口不受影响：仍用 CLI UA，且带 X-Product。
-    h = chat_headers(CN)
+    # 聊天接口走 CLI 2.184 指纹，且带 X-Product。
+    h = chat_headers(CN, conversation_id="conv-1")
     assert h["User-Agent"] == CLIENT_UA
+    assert h["User-Agent"] == "CodeBuddy/2.184.0"
     assert h["X-Product"] == "SaaS"
+    assert h["X-IDE-Type"] == "CLI"
+    assert h["X-Conversation-ID"] == "conv-1"
     assert "X-Refresh-Token" not in h
 
 

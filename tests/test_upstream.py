@@ -199,10 +199,10 @@ async def test_poll_login_pending_and_success() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
-        if "/v2/plugin/auth/token" in url:
+        if "/v2/auth/token" in url and "/refresh" not in url:
             if step == "pending":
-                # 上游尚未完成时返回 400
-                return httpx.Response(400, json={"code": 10002, "msg": "authorization pending"})
+                # CLI 2.184：浏览器尚未完成时返回业务码 11217，而不是 HTTP 4xx。
+                return httpx.Response(200, json={"code": 11217, "msg": "authorization pending"})
             else:
                 return httpx.Response(
                     200,
@@ -217,7 +217,7 @@ async def test_poll_login_pending_and_success() -> None:
                         },
                     },
                 )
-        if "/v2/plugin/login/account" in url:
+        if url.rstrip("/").endswith("/v2/account"):
             return httpx.Response(
                 200,
                 json={
@@ -337,12 +337,12 @@ async def test_travel_once_branches() -> None:
 async def test_login_manager_lifecycle() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
-        if "/v2/plugin/auth/state" in url:
+        if "/v2/auth/state" in url:
             return httpx.Response(
                 200,
                 json={"code": 0, "data": {"state": "st_xyz", "authUrl": "https://auth.com"}},
             )
-        if "/v2/plugin/auth/token" in url:
+        if "/v2/auth/token" in url and "/refresh" not in url:
             return httpx.Response(
                 200,
                 json={
@@ -354,7 +354,7 @@ async def test_login_manager_lifecycle() -> None:
                     },
                 },
             )
-        if "/v2/plugin/login/account" in url:
+        if url.rstrip("/").endswith("/v2/account"):
             return httpx.Response(
                 200,
                 json={
@@ -506,7 +506,7 @@ async def test_scheduler_checkin_and_keepalive() -> None:
                     },
                 },
             )
-        if "/v2/plugin/auth/token/refresh" in url:
+        if "/v2/auth/token/refresh" in url:
             return httpx.Response(
                 200,
                 json={
@@ -561,7 +561,6 @@ async def test_fetch_models_and_efforts() -> None:
                 "data": {
                     "agents": [
                         {"name": "web", "models": ["gpt-web"]},
-                        {"name": "cli", "models": ["claude-3-5-sonnet", "gpt-4o", "disabled-model"]},
                     ],
                     "models": [
                         {
@@ -603,7 +602,8 @@ async def test_fetch_models_and_efforts() -> None:
         assert models[0].max_tokens == 8192
         assert models[0].efforts == ["low", "medium", "high"]
         assert models[1].id == "gpt-4o"
-        # 验证 efforts 缓存
+        # 无 cli agent 分组时使用目录本身，且跳过 disabled。
+        assert "disabled-model" not in {m.id for m in models}
         assert client.efforts == {"claude-3-5-sonnet": ["low", "medium", "high"]}
     finally:
         await client.aclose()

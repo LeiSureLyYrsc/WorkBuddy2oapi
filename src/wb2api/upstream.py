@@ -22,9 +22,9 @@ import httpx
 
 from .headers import (
     CLIENT_UA,
+    anonymous_headers,
     billing_headers,
     chat_headers,
-    common_headers,
     refresh_headers,
 )
 from .models import Account
@@ -40,6 +40,10 @@ CHAT_BASE_CN = "https://copilot.tencent.com"
 BILLING_BASE_CN = "https://www.codebuddy.cn"
 CHAT_BASE_GLOBAL = "https://www.workbuddy.ai"
 BILLING_BASE_GLOBAL = "https://www.workbuddy.ai"
+
+# CLI 2.184 登录轮询：浏览器尚未完成时上游返回这两个业务码，而不是 HTTP 4xx。
+LOGIN_TOKEN_PENDING_CODE = 11217
+LOGIN_ACCOUNT_PENDING_CODE = 12151
 
 _CST_TZ = timezone(timedelta(hours=8))
 _MODEL_RATE_LIMIT_RE = re.compile(r'"code"\s*:\s*"?6004"?')
@@ -70,7 +74,7 @@ class ErrKind(str, Enum):
 class UpstreamError(Exception):
     """带分类与状态码的上游错误。"""
 
-    def __init__(self, kind: ErrKind | str, status: int = 0, msg: str = "") -> None:
+    def __init__(self, kind: ErrKind | str, status: int = 0, msg: str = "", code: int = 0) -> None:
         if isinstance(kind, str):
             try:
                 self.kind = ErrKind(kind)
@@ -80,6 +84,7 @@ class UpstreamError(Exception):
             self.kind = kind
         self.status = status
         self.msg = msg
+        self.code = code
         super().__init__(f"upstream {self.kind.value} (http {self.status}): {self.msg}")
 
 
@@ -511,6 +516,7 @@ class UpstreamClient:
                 kind=kind,
                 status=resp.status_code,
                 msg=f"code={code} msg={truncated_msg}{hint}",
+                code=code if isinstance(code, int) else 0,
             )
 
         return env.get("data")
@@ -544,12 +550,27 @@ class UpstreamClient:
     # 登录 / OAuth
     # -----------------------------------------------------------------------
 
+    def _login_platform(self, region: str) -> str:
+        """CLI 2.184 用产品 ``platform``，国内与国际版安装包都是 ``CLI``。"""
+        return "CLI"
+
+    def _login_dummy(self, region: str) -> Account:
+        domain = "www.workbuddy.ai" if region.lower() == "global" else "copilot.tencent.com"
+        return Account(domain=domain)
+
+    @staticmethod
+    def _is_login_pending(err: UpstreamError, pending_code: int) -> bool:
+        """CLI 只把指定业务码当成「浏览器还没登完」。"""
+        if err.code == pending_code:
+            return True
+        return f"code={pending_code}" in (err.msg or "")
+
     async def start_login(self, region: str) -> tuple[str, str]:
-        """发起设备授权，返回 (state, auth_url)。"""
+        """发起账号作用域外链登录，返回 (state, auth_url)。"""
         base = self._chat_base(region=region)
-        url = f"{base}/v2/plugin/auth/state?platform=CLI"
-        dummy = Account(domain="www.workbuddy.ai" if region.lower() == "global" else "copilot.tencent.com")
-        headers = common_headers(dummy)
+        platform = self._login_platform(region)
+        url = f"{base}/v2/auth/state?platform={platform}"
+        headers = anonymous_headers(self._login_dummy(region))
         req = self.http.build_request("POST", url, headers=headers, json={})
         data = await self._do_json(req)
 
@@ -561,7 +582,7 @@ class UpstreamClient:
         if not state:
             raise UpstreamError(kind=ErrKind.client, status=200, msg="授权响应缺少 state")
         if not auth_url:
-            auth_url = f"{base}/login?state={state}&platform=CLI"
+            auth_url = f"{base}/login?state={state}&platform={platform}"
         return state, auth_url
 
     async def poll_login(self, region: str, state: str) -> Account | None:
@@ -570,15 +591,15 @@ class UpstreamClient:
             raise ValueError("缺少 state")
 
         base = self._chat_base(region=region)
-        url = f"{base}/v2/plugin/auth/token?state={state}"
-        dummy = Account(domain="www.workbuddy.ai" if region.lower() == "global" else "copilot.tencent.com")
-        headers = common_headers(dummy)
+        url = f"{base}/v2/auth/token?state={state}"
+        dummy = self._login_dummy(region)
+        headers = anonymous_headers(dummy)
         req = self.http.build_request("GET", url, headers=headers)
 
         try:
             data = await self._do_json(req)
         except UpstreamError as ue:
-            if 0 < ue.status < 500:
+            if self._is_login_pending(ue, LOGIN_TOKEN_PENDING_CODE):
                 return None
             raise
 
@@ -592,7 +613,7 @@ class UpstreamClient:
         refresh_token = str(data.get("refreshToken") or "")
         domain = str(data.get("domain") or "")
         if not domain:
-            domain = "www.workbuddy.ai" if region.lower() == "global" else "copilot.tencent.com"
+            domain = dummy.domain
 
         expires_in = int(data.get("expiresIn") or 0)
         expires_at = int(time.time() + expires_in) if expires_in > 0 else 0
@@ -604,37 +625,47 @@ class UpstreamClient:
             domain=domain,
         )
 
-        # 尝试拉取 account 信息（获取 uid / enterpriseId / nickname）
-        acct_url = f"{base}/v2/plugin/login/account?state={state}"
-        acct_headers = common_headers(dummy)
-        acct_headers["Authorization"] = f"Bearer {access_token}"
-        acct_req = self.http.build_request("GET", acct_url, headers=acct_headers)
-        try:
-            resp = await self.http.send(acct_req)
-            raw = await resp.aread()
-            env = json.loads(raw.decode("utf-8", errors="replace"))
-            if isinstance(env, dict) and env.get("code") == 0:
-                info = env.get("data")
-                if isinstance(info, dict):
-                    acct.uid = str(info.get("uid") or "")
-                    acct.enterprise_id = str(info.get("enterpriseId") or "")
-                    acct.nickname = str(info.get("nickname") or "")
-        except Exception:
-            pass
+        # CLI 换票成功后用 Bearer 拉当前账号，不再带 state。
+        info = await self._fetch_current_account(acct)
+        acct.uid = str(info.get("uid") or "")
+        acct.enterprise_id = str(info.get("enterpriseId") or "")
+        acct.nickname = str(info.get("nickname") or "")
+        if info.get("domain"):
+            acct.domain = str(info["domain"])
 
         if not acct.uid:
             raise ValueError("登录成功但未能获取 uid")
 
         return acct
 
+    async def _fetch_current_account(self, account: Account) -> dict[str, Any]:
+        """``GET /v2/account``。账号资料尚未就绪时返回空 dict。"""
+        url = f"{self._chat_base(account)}/v2/account"
+        headers = refresh_headers(account)
+        headers.pop("X-Refresh-Token", None)
+        headers.pop("X-Auth-Refresh-Source", None)
+        headers["Authorization"] = "Bearer " + account.access_token
+        headers["X-No-User-Id"] = "true"
+        headers["X-No-Enterprise-Id"] = "true"
+        headers["X-No-Department-Info"] = "true"
+        headers["X-No-Tenant-Id"] = "true"
+        req = self.http.build_request("GET", url, headers=headers)
+        try:
+            data = await self._do_json(req)
+        except UpstreamError as ue:
+            if self._is_login_pending(ue, LOGIN_ACCOUNT_PENDING_CODE):
+                return {}
+            raise
+        return data if isinstance(data, dict) else {}
+
     async def refresh_token(self, account: Account) -> None:
         """刷新 access token，就地更新 account 字段。"""
         if not account.refresh_token or not account.refresh_token.strip():
             raise ValueError("no refreshToken")
 
-        url = f"{self._chat_base(account)}/v2/plugin/auth/token/refresh"
+        url = f"{self._chat_base(account)}/v2/auth/token/refresh"
         headers = refresh_headers(account)
-        req = self.http.build_request("POST", url, headers=headers)
+        req = self.http.build_request("POST", url, headers=headers, json={})
         data = await self._do_json(req)
 
         if not isinstance(data, dict) or not data.get("accessToken"):
@@ -652,6 +683,17 @@ class UpstreamClient:
         if expires_in > 0:
             account.expires_at = int(time.time() + expires_in)
 
+        try:
+            info = await self._fetch_current_account(account)
+        except UpstreamError:
+            info = {}
+        if info.get("uid"):
+            account.uid = str(info["uid"])
+        if info.get("enterpriseId"):
+            account.enterprise_id = str(info["enterpriseId"])
+        if info.get("nickname"):
+            account.nickname = str(info["nickname"])
+
     # -----------------------------------------------------------------------
     # 聊天与模型
     # -----------------------------------------------------------------------
@@ -660,10 +702,12 @@ class UpstreamClient:
         self,
         account: Account,
         body: bytes,
+        *,
+        conversation_id: str = "",
     ) -> tuple[httpx.Response | None, int, bytes]:
         """发起聊天 SSE 请求。2xx 返回 (response, 200, b"")，非 2xx 返回 (None, status, raw_bytes)。"""
         url = f"{self._chat_base(account)}/v2/chat/completions"
-        headers = chat_headers(account)
+        headers = chat_headers(account, conversation_id=conversation_id)
         out_body = prepare_body(
             body,
             sanitize=self.sanitize,
@@ -718,20 +762,23 @@ class UpstreamClient:
 
         data = env.get("data") or {}
         models_list = data.get("models") or []
+        # CLI 2.184 不再按 agents[name=cli] 取子集；目录本身就是客户端模型表。
+        # 旧响应若仍带 agents，只在存在 cli 分组时用作过滤，避免把纯网页模型混进来。
         agents_list = data.get("agents") or []
-
         cli_ids: list[str] = []
         for ag in agents_list:
-            if ag.get("name") == "cli":
-                cli_ids = ag.get("models") or []
+            if isinstance(ag, dict) and ag.get("name") == "cli":
+                cli_ids = [str(x) for x in (ag.get("models") or [])]
                 break
 
-        if not cli_ids:
-            raise UpstreamError(kind=ErrKind.client, msg="no cli agent models found")
-
         dyn_map = {}
+        ordered: list[str] = []
         for m in models_list:
-            mid = m.get("id")
+            if not isinstance(m, dict):
+                continue
+            mid = str(m.get("id") or "")
+            if not mid:
+                continue
             reasoning = m.get("reasoning") or {}
             efforts = reasoning.get("supportedEfforts") or []
             dyn_map[mid] = {
@@ -742,9 +789,11 @@ class UpstreamClient:
                 "disabled": bool(m.get("disabled", False)),
                 "efforts": efforts,
             }
+            ordered.append(mid)
 
+        selected = cli_ids or ordered
         out: list[ModelInfo] = []
-        for mid in cli_ids:
+        for mid in selected:
             m = dyn_map.get(mid)
             if not m or m["disabled"]:
                 continue

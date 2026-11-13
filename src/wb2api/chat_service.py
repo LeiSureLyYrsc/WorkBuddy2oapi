@@ -331,7 +331,9 @@ async def open_stream(
                 continue
 
             try:
-                resp, status, raw = await state.upstream.chat_stream(acct, body)
+                resp, status, raw = await state.upstream.chat_stream(
+                    acct, body, conversation_id=sess_key
+                )
             except UpstreamError as e:
                 lease.release()
                 last_err = e
