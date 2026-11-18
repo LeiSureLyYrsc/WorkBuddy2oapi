@@ -45,6 +45,10 @@ BILLING_BASE_GLOBAL = "https://www.workbuddy.ai"
 LOGIN_TOKEN_PENDING_CODE = 11217
 LOGIN_ACCOUNT_PENDING_CODE = 12151
 
+# product.json authentication.attributes.prefixPath。CLI 拼的是 ``/v2${prefixPath}/auth/...``，
+# 国内与国际版都是 ``/plugin``；去掉这段会打到不存在的 ``/v2/auth/state``（404 Route Not Found）。
+AUTH_PREFIX = "/plugin"
+
 _CST_TZ = timezone(timedelta(hours=8))
 _MODEL_RATE_LIMIT_RE = re.compile(r'"code"\s*:\s*"?6004"?')
 _SOFT_RATE_RESET_RE = re.compile(r"将在 (.+?) 重置")
@@ -569,7 +573,7 @@ class UpstreamClient:
         """发起账号作用域外链登录，返回 (state, auth_url)。"""
         base = self._chat_base(region=region)
         platform = self._login_platform(region)
-        url = f"{base}/v2/auth/state?platform={platform}"
+        url = f"{base}/v2{AUTH_PREFIX}/auth/state?platform={platform}"
         headers = anonymous_headers(self._login_dummy(region))
         req = self.http.build_request("POST", url, headers=headers, json={})
         data = await self._do_json(req)
@@ -591,7 +595,7 @@ class UpstreamClient:
             raise ValueError("缺少 state")
 
         base = self._chat_base(region=region)
-        url = f"{base}/v2/auth/token?state={state}"
+        url = f"{base}/v2{AUTH_PREFIX}/auth/token?state={state}"
         dummy = self._login_dummy(region)
         headers = anonymous_headers(dummy)
         req = self.http.build_request("GET", url, headers=headers)
@@ -639,8 +643,8 @@ class UpstreamClient:
         return acct
 
     async def _fetch_current_account(self, account: Account) -> dict[str, Any]:
-        """``GET /v2/account``。账号资料尚未就绪时返回空 dict。"""
-        url = f"{self._chat_base(account)}/v2/account"
+        """``GET /v2/plugin/account``。账号资料尚未就绪时返回空 dict。"""
+        url = f"{self._chat_base(account)}/v2{AUTH_PREFIX}/account"
         headers = refresh_headers(account)
         headers.pop("X-Refresh-Token", None)
         headers.pop("X-Auth-Refresh-Source", None)
@@ -663,7 +667,7 @@ class UpstreamClient:
         if not account.refresh_token or not account.refresh_token.strip():
             raise ValueError("no refreshToken")
 
-        url = f"{self._chat_base(account)}/v2/auth/token/refresh"
+        url = f"{self._chat_base(account)}/v2{AUTH_PREFIX}/auth/token/refresh"
         headers = refresh_headers(account)
         req = self.http.build_request("POST", url, headers=headers, json={})
         data = await self._do_json(req)
