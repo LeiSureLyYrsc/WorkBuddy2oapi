@@ -678,6 +678,7 @@ class UpstreamClient:
                 msg="refresh_failed: no accessToken in response — re-login required",
             )
 
+        kept_alias = account.alias
         account.access_token = str(data["accessToken"])
         if data.get("refreshToken"):
             account.refresh_token = str(data["refreshToken"])
@@ -697,6 +698,7 @@ class UpstreamClient:
             account.enterprise_id = str(info["enterpriseId"])
         if info.get("nickname"):
             account.nickname = str(info["nickname"])
+        account.alias = kept_alias
 
     # -----------------------------------------------------------------------
     # 聊天与模型

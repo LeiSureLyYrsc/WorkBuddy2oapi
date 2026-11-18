@@ -4,6 +4,8 @@
 export interface Account {
   uid: string
   nickname: string
+  /** 本地别名。优先于上游昵称展示。 */
+  alias?: string
   enterprise_id: string
   domain: string
 

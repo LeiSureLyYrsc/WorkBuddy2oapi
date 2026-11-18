@@ -111,6 +111,12 @@ export const api = {
   accountRefresh: (uid: string) => post<OpResult>(`/api/accounts/${encodeURIComponent(uid)}/refresh`),
   accountTravel: (uid: string) => post<OpResult>(`/api/accounts/${encodeURIComponent(uid)}/travel`),
   accountCredits: (uid: string) => post<Credits>(`/api/accounts/${encodeURIComponent(uid)}/credits`),
+  setAlias: (uid: string, alias: string) =>
+    put<OpResult>(`/api/accounts/${encodeURIComponent(uid)}/alias`, { alias }),
+  exportAccount: (uid: string) =>
+    get<{ uid: string; ok: boolean; file_name: string; credential: unknown; message?: string }>(
+      `/api/accounts/${encodeURIComponent(uid)}/export`,
+    ),
 
   // 批量任务
   batchCheckin: (uids: string[]) => post<TaskView>('/api/tasks/checkin', { uids }),

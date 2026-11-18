@@ -56,9 +56,9 @@ export function shortUID(uid: string): string {
   return uid.length > 8 ? uid.slice(0, 8) : uid
 }
 
-/** 账号展示名：昵称优先，其次 uid 前缀。 */
-export function displayName(a: { nickname?: string; uid: string }): string {
-  return a.nickname || shortUID(a.uid)
+/** 账号展示名：本地别名优先，其次上游昵称，最后 uid 前缀。 */
+export function displayName(a: { alias?: string; nickname?: string; uid: string }): string {
+  return a.alias || a.nickname || shortUID(a.uid)
 }
 
 /** 状态徽章配色与文案。 */

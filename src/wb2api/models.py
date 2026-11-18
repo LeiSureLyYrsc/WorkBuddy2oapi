@@ -22,6 +22,7 @@ class Account:
     uid: str = ""
     enterprise_id: str = ""
     nickname: str = ""
+    alias: str = ""  # 本地备注，不随上游昵称刷新
     file_path: str = ""  # 来源文件绝对路径（不序列化）
 
     def expires_at_time(self) -> float:

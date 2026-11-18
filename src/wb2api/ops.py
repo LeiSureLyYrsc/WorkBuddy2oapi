@@ -244,6 +244,7 @@ class Service:
             by_uid[a.uid] = {
                 "uid": a.uid,
                 "nickname": a.nickname,
+                "alias": a.alias,
                 "enterprise_id": a.enterprise_id,
                 "domain": a.domain,
                 "has_file": True,
@@ -276,6 +277,7 @@ class Service:
                 v = {
                     "uid": ga.uid,
                     "nickname": ga.nickname,
+                    "alias": "",
                     "enterprise_id": "",
                     "domain": "",
                     "has_file": False,
@@ -565,6 +567,43 @@ class Service:
             "ok": True,
             "message": f"凭证已保存到 {file_name}，并已热加载到账号池，无需重启",
             "data": {"file": file_name},
+        }
+
+    def set_alias(self, uid: str, alias: str) -> dict[str, Any]:
+        """设置本地账号别名。空字符串表示清除。不影响上游昵称。"""
+        self.ensure_writable()
+        uid = (uid or "").strip()
+        cleaned = " ".join((alias or "").split())
+        if len(cleaned) > 64:
+            return {"uid": uid, "action": "alias", "ok": False, "message": "别名最长 64 个字符"}
+        try:
+            account = self.state.store.get(uid)
+        except FileNotFoundError:
+            return {"uid": uid, "action": "alias", "ok": False, "message": "该账号没有本地凭证，无法保存别名"}
+        account.alias = cleaned
+        self.state.store.save(account)
+        self.state.pool.add(account)
+        return {
+            "uid": uid,
+            "action": "alias",
+            "ok": True,
+            "message": f"别名已保存为「{cleaned}」" if cleaned else "别名已清除",
+            "data": {"alias": cleaned},
+        }
+
+    def export_account(self, uid: str) -> dict[str, Any]:
+        """导出单个账号的完整凭证（嵌套 JSON），供迁移或备份后重新导入。"""
+        uid = (uid or "").strip()
+        try:
+            account = self.state.store.get(uid)
+        except FileNotFoundError:
+            return {"uid": uid, "ok": False, "message": "该账号没有本地凭证文件"}
+        raw = Path(account.file_path).read_text(encoding="utf-8")
+        return {
+            "uid": uid,
+            "ok": True,
+            "file_name": os.path.basename(account.file_path) or f"workbuddy-{uid}.json",
+            "credential": json.loads(raw),
         }
 
     def delete_account(self, uid: str) -> dict[str, Any]:

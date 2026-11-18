@@ -37,6 +37,7 @@ def test_parse_nested() -> None:
             "uid": "user_nested_01",
             "enterpriseId": "ent_test",
             "nickname": "嵌套测试",
+            "alias": "主力号",
         },
         "auth": {
             "accessToken": "token_nested_123",
@@ -50,6 +51,7 @@ def test_parse_nested() -> None:
     assert acct.uid == "user_nested_01"
     assert acct.enterprise_id == "ent_test"
     assert acct.nickname == "嵌套测试"
+    assert acct.alias == "主力号"
     assert acct.access_token == "token_nested_123"
     assert acct.refresh_token == "refresh_nested_456"
     assert acct.expires_at == 1727100000
@@ -100,6 +102,7 @@ def test_store_save_and_get(tmp_path: Path) -> None:
         uid="account_001",
         enterprise_id="ent_01",
         nickname="账号1",
+        alias="备注甲",
         access_token="tok_001",
         refresh_token="ref_001",
         expires_at=1727300000,
@@ -116,12 +119,14 @@ def test_store_save_and_get(tmp_path: Path) -> None:
     assert "account" in content
     assert "auth" in content
     assert content["account"]["uid"] == "account_001"
+    assert content["account"]["alias"] == "备注甲"
     assert content["auth"]["accessToken"] == "tok_001"
 
     # 读取并验证
     loaded = store.get("account_001")
     assert loaded.uid == "account_001"
     assert loaded.access_token == "tok_001"
+    assert loaded.alias == "备注甲"
     assert loaded.file_path == str(file_path.resolve())
 
 

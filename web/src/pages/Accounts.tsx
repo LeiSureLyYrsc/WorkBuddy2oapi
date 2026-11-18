@@ -68,7 +68,13 @@ export default function Accounts({ session }: { session: SessionInfo }) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return accounts.filter((a) => {
-      if (q && !a.uid.toLowerCase().includes(q) && !a.nickname.toLowerCase().includes(q)) return false
+      if (
+        q &&
+        !a.uid.toLowerCase().includes(q) &&
+        !a.nickname.toLowerCase().includes(q) &&
+        !(a.alias || '').toLowerCase().includes(q)
+      )
+        return false
       switch (filter) {
         case 'healthy':
           return a.status === 'healthy'
@@ -293,7 +299,7 @@ export default function Accounts({ session }: { session: SessionInfo }) {
           <div className="page-actions">
             <input
               type="text"
-              placeholder="搜索 uid / 昵称…"
+              placeholder="搜索别名 / uid / 昵称…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               style={{ width: 190 }}
@@ -366,6 +372,7 @@ export default function Accounts({ session }: { session: SessionInfo }) {
                           {displayName(a)}
                         </button>
                         <div className="mono text-faint" style={{ fontSize: 11 }}>
+                          {a.alias && a.nickname ? `${a.nickname} · ` : ''}
                           {a.uid.slice(0, 8)}
                           {a.in_gateway && a.in_flight > 0 && (
                             <span className="text-accent"> · 在途 {a.in_flight}</span>
@@ -464,7 +471,14 @@ export default function Accounts({ session }: { session: SessionInfo }) {
         )}
       </div>
 
-      {detailUid && <AccountDetail uid={detailUid} onClose={() => setDetailUid(null)} />}
+      {detailUid && (
+        <AccountDetail
+          uid={detailUid}
+          writeDisabled={writeDisabled}
+          onClose={() => setDetailUid(null)}
+          onChanged={() => void load(true)}
+        />
+      )}
 
       {taskId && (
         <TaskProgress
@@ -523,10 +537,24 @@ export default function Accounts({ session }: { session: SessionInfo }) {
 }
 
 /** AccountDetail 账号详情弹窗：实时积分、猫档案、冷却/熔断细节。 */
-function AccountDetail({ uid, onClose }: { uid: string; onClose: () => void }) {
+function AccountDetail({
+  uid,
+  writeDisabled,
+  onClose,
+  onChanged,
+}: {
+  uid: string
+  writeDisabled: boolean
+  onClose: () => void
+  onChanged: () => void
+}) {
   const [profile, setProfile] = useState<AccountProfile | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [alias, setAlias] = useState('')
+  const [aliasBusy, setAliasBusy] = useState(false)
+  const [aliasMsg, setAliasMsg] = useState<string | null>(null)
+  const [exportBusy, setExportBusy] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -534,7 +562,10 @@ function AccountDetail({ uid, onClose }: { uid: string; onClose: () => void }) {
     api
       .account(uid)
       .then((p) => {
-        if (!cancelled) setProfile(p)
+        if (!cancelled) {
+          setProfile(p)
+          setAlias(p.account.alias || '')
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof ApiError ? err.message : '加载详情失败')
@@ -548,6 +579,44 @@ function AccountDetail({ uid, onClose }: { uid: string; onClose: () => void }) {
   }, [uid])
 
   const a = profile?.account
+
+  const saveAlias = async () => {
+    setAliasMsg(null)
+    setAliasBusy(true)
+    try {
+      const res = await api.setAlias(uid, alias.trim())
+      if (!res.ok) {
+        setAliasMsg(res.message)
+        return
+      }
+      setAliasMsg(res.message)
+      onChanged()
+    } catch (err) {
+      setAliasMsg(err instanceof ApiError ? err.message : '保存别名失败')
+    } finally {
+      setAliasBusy(false)
+    }
+  }
+
+  const exportCredential = async () => {
+    setExportBusy(true)
+    setAliasMsg(null)
+    try {
+      const res = await api.exportAccount(uid)
+      const text = JSON.stringify(res.credential, null, 2) + '\n'
+      const blob = new Blob([text], { type: 'application/json' })
+      const href = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = href
+      link.download = res.file_name || `workbuddy-${uid}.json`
+      link.click()
+      URL.revokeObjectURL(href)
+    } catch (err) {
+      setAliasMsg(err instanceof ApiError ? err.message : '导出失败')
+    } finally {
+      setExportBusy(false)
+    }
+  }
 
   return (
     <Modal title={`账号详情 · ${a ? displayName(a) : uid.slice(0, 8)}`} onClose={onClose} wide>
@@ -592,6 +661,23 @@ function AccountDetail({ uid, onClose }: { uid: string; onClose: () => void }) {
           <dl className="kv">
             <dt>UID</dt>
             <dd className="mono">{a.uid}</dd>
+            <dt>别名</dt>
+            <dd>
+              <div className="page-actions" style={{ gap: 6 }}>
+                <input
+                  value={alias}
+                  maxLength={64}
+                  disabled={writeDisabled || aliasBusy}
+                  onChange={(e) => setAlias(e.target.value)}
+                  placeholder="给这个账号起个本地名字"
+                  style={{ maxWidth: 240 }}
+                />
+                <button className="btn btn-sm" disabled={writeDisabled || aliasBusy} onClick={() => void saveAlias()}>
+                  {aliasBusy ? <Spinner /> : '保存'}
+                </button>
+              </div>
+              {aliasMsg && <div className="text-faint" style={{ fontSize: 12, marginTop: 4 }}>{aliasMsg}</div>}
+            </dd>
             <dt>昵称</dt>
             <dd>{a.nickname || '—'}</dd>
             <dt>企业 ID</dt>
@@ -629,6 +715,9 @@ function AccountDetail({ uid, onClose }: { uid: string; onClose: () => void }) {
       )}
 
       <div className="modal-foot">
+        <button className="btn" disabled={exportBusy || !a?.has_file} onClick={() => void exportCredential()} title="下载完整凭证 JSON，可在另一台用「导入凭证」恢复">
+          {exportBusy ? <Spinner /> : '导出凭证'}
+        </button>
         <button className="btn" onClick={onClose}>
           关闭
         </button>

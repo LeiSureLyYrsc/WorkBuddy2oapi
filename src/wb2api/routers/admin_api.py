@@ -270,6 +270,31 @@ async def get_account(uid: str, state: StateDep, silent: bool = Query(False)) ->
         return handle_error(e)
 
 
+@router.put("/accounts/{uid}/alias", dependencies=[Depends(require_session)])
+async def set_account_alias(uid: str, state: StateDep, payload: dict[str, Any]) -> Any:
+    """设置或清除账号本地别名。"""
+    svc = Service(state)
+    try:
+        res = svc.set_alias(uid, str(payload.get("alias") or ""))
+        status_code = status.HTTP_200_OK if res.get("ok") else status.HTTP_400_BAD_REQUEST
+        return JSONResponse(status_code=status_code, content=res)
+    except Exception as e:
+        return handle_error(e)
+
+
+@router.get("/accounts/{uid}/export", dependencies=[Depends(require_session)])
+async def export_account(uid: str, state: StateDep) -> Any:
+    """导出单个账号的完整凭证 JSON。"""
+    svc = Service(state)
+    try:
+        res = svc.export_account(uid)
+        if not res.get("ok"):
+            return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content=res)
+        return res
+    except Exception as e:
+        return handle_error(e)
+
+
 @router.delete("/accounts/{uid}", dependencies=[Depends(require_session)])
 async def delete_account(uid: str, state: StateDep, confirm: str = Query("")) -> Any:
     """删除账号凭证并从池中移除（需二次确认：``?confirm=<uid>``）。"""

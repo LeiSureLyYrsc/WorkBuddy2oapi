@@ -2,7 +2,7 @@
 
 磁盘格式与 Go 端一致（嵌套形）：
     {
-      "account": {"uid", "enterpriseId", "nickname"},
+      "account": {"uid", "enterpriseId", "nickname", "alias"},
       "auth": {"accessToken", "refreshToken", "expiresAt", "domain"}
     }
 兼容读取扁平形（手写/旧版）。写回一律用嵌套形，保证兼容性。
@@ -61,6 +61,7 @@ def parse(raw: bytes | str) -> Account:
         uid = str(acct_obj.get("uid") or "")
         enterprise_id = str(acct_obj.get("enterpriseId") or "")
         nickname = str(acct_obj.get("nickname") or "")
+        alias = str(acct_obj.get("alias") or data.get("alias") or "")
         access_token = str(auth_obj.get("accessToken") or "")
         refresh_token = str(auth_obj.get("refreshToken") or "")
         expires_at = int(auth_obj.get("expiresAt") or 0)
@@ -69,6 +70,7 @@ def parse(raw: bytes | str) -> Account:
         uid = str(data.get("uid") or "")
         enterprise_id = str(data.get("enterpriseId") or "")
         nickname = str(data.get("nickname") or "")
+        alias = str(data.get("alias") or "")
         access_token = str(data.get("accessToken") or "")
         refresh_token = str(data.get("refreshToken") or "")
         expires_at = int(data.get("expiresAt") or 0)
@@ -85,6 +87,7 @@ def parse(raw: bytes | str) -> Account:
         uid=uid,
         enterprise_id=enterprise_id,
         nickname=nickname,
+        alias=alias.strip(),
     )
 
 
@@ -170,6 +173,7 @@ class AccountStore:
                 "uid": account.uid,
                 "enterpriseId": account.enterprise_id,
                 "nickname": account.nickname,
+                "alias": account.alias,
             },
             "auth": {
                 "accessToken": account.access_token,
